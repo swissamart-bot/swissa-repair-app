@@ -2,13 +2,14 @@ import React, { useState, useCallback } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, FlatList,
   StyleSheet, Alert, Modal, Image, ScrollView, Platform,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router';
 import * as Linking from 'expo-linking';
-import { getAllRecords, updateRecord, deleteRecordById, clearAllRecords } from '../src/database';
-import { C, SHOP } from '../src/constants';
+import { getAllRecords, updateRecord, deleteRecordById } from '../src/database';
+import { C, SHOP, ITEM_TYPES, DELIVERY_MSG } from '../src/constants';
 import { RepairRecord } from '../src/types';
 
 const FILTERS = [
@@ -25,6 +26,12 @@ export default function Records() {
   const [receiptRecord, setReceiptRecord] = useState<RepairRecord | null>(null);
   const [photoRecord, setPhotoRecord] = useState<RepairRecord | null>(null);
   const [toast, setToast] = useState<{ msg: string; err: boolean } | null>(null);
+  // Edit state
+  const [editRecord, setEditRecord] = useState<RepairRecord | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editPhone, setEditPhone] = useState('');
+  const [editItem, setEditItem] = useState('');
+  const [editIssue, setEditIssue] = useState('');
 
   useFocusEffect(useCallback(() => { loadRecords(); }, []));
 
@@ -38,12 +45,37 @@ export default function Records() {
     setTimeout(() => setToast(null), 3000);
   }
 
+  // Search includes job ID, name, phone, item
   const filtered = records.filter(r => {
     const matchFilter = filter === 'all' || r.status === filter;
     const q = search.toLowerCase();
-    const matchSearch = !q || r.name.toLowerCase().includes(q) || r.phone.includes(q) || r.item.toLowerCase().includes(q);
+    const matchSearch = !q || r.name.toLowerCase().includes(q) || r.phone.includes(q) || r.item.toLowerCase().includes(q) || r.id.includes(q);
     return matchFilter && matchSearch;
   });
+
+  function startEdit(record: RepairRecord) {
+    setEditRecord(record);
+    setEditName(record.name);
+    setEditPhone(record.phone);
+    setEditItem(record.item);
+    setEditIssue(record.issue);
+  }
+
+  async function saveEdit() {
+    if (!editRecord) return;
+    if (!editName.trim()) { showToastMsg('Name is required', true); return; }
+    const updated: RepairRecord = {
+      ...editRecord,
+      name: editName.trim(),
+      phone: editPhone.trim(),
+      item: editItem,
+      issue: editIssue.trim(),
+    };
+    await updateRecord(updated);
+    await loadRecords();
+    setEditRecord(null);
+    showToastMsg('Record updated!');
+  }
 
   async function handleMarkRepaired(record: RepairRecord) {
     Alert.alert('Mark Repaired', `Mark ${record.name}'s ${record.item} as repaired?`, [
@@ -77,7 +109,7 @@ export default function Records() {
 
   function sendRepairedWA(r: RepairRecord) {
     const cleanPhone = (r.countryCode + r.phone).replace(/\D/g, '');
-    const msg = `🏪 *SWISSA — Watch & Opticals*\n\nHi ${r.name}! 👋\n\nGreat news! Your ${r.item} has been *REPAIRED* and is ready for collection. ✅\n\n🔖 Job ID: #${r.id}\n\nPlease visit us at your earliest convenience to collect your ${r.item}.\n\n📍 ${SHOP.address}\n\nThank you for choosing SWISSA! 🙏`;
+    const msg = `🏪 *SWISSA — Watch & Opticals*\n\nHi ${r.name}! 👋\n\nGreat news! Your ${r.item} has been *REPAIRED* and is ready for collection. ✅\n\n🔖 Job ID: #${r.id}\n\nPlease visit us at your earliest convenience to collect your ${r.item}.\n\n📍 ${SHOP.address}\n\n${DELIVERY_MSG}\n\n⚠️ *SHOW THIS MESSAGE WHILE TAKING DELIVERY*\n⚠️ *SHARE THIS MESSAGE ONLY TO TRUSTED PEOPLE FOR TAKING DELIVERY*\n\nThank you for choosing SWISSA! 🙏`;
     Linking.openURL(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`);
   }
 
@@ -90,7 +122,7 @@ export default function Records() {
   // KEY FIX: Send reminder multiple times for repaired items
   function sendReminderWA(r: RepairRecord) {
     const cleanPhone = (r.countryCode + r.phone).replace(/\D/g, '');
-    const msg = `🏪 *SWISSA — Watch & Opticals*\n\nHi ${r.name}! 👋\n\nThis is a friendly reminder that your ${r.item} has been *REPAIRED* and is waiting for you to collect. ✅\n\n🔖 Job ID: #${r.id}\n\nPlease visit us at your earliest convenience.\n\n📍 ${SHOP.address}\n\nThank you! 🙏`;
+    const msg = `🏪 *SWISSA — Watch & Opticals*\n\nHi ${r.name}! 👋\n\nThis is a friendly reminder that your ${r.item} has been *REPAIRED* and is waiting for you to collect. ✅\n\n🔖 Job ID: #${r.id}\n\nPlease visit us at your earliest convenience.\n\n📍 ${SHOP.address}\n\n${DELIVERY_MSG}\n\n⚠️ *SHOW THIS MESSAGE WHILE TAKING DELIVERY*\n⚠️ *SHARE THIS MESSAGE ONLY TO TRUSTED PEOPLE FOR TAKING DELIVERY*\n\nThank you! 🙏`;
     Linking.openURL(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`);
   }
 
@@ -108,19 +140,6 @@ export default function Records() {
           await deleteRecordById(record.id);
           await loadRecords();
           showToastMsg('Record deleted');
-        },
-      },
-    ]);
-  }
-
-  async function handleClearAll() {
-    Alert.alert('Clear All Records', 'This will delete ALL records. Are you sure?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Clear All', style: 'destructive', onPress: async () => {
-          await clearAllRecords();
-          await loadRecords();
-          showToastMsg('All records cleared');
         },
       },
     ]);
@@ -149,6 +168,7 @@ export default function Records() {
           <View style={s.cardInfo}>
             <Text style={s.cardName} numberOfLines={1}>{r.name}</Text>
             <Text style={s.cardPhone}>{r.countryCode} {r.phone}</Text>
+            <Text style={s.cardJobId}>Job #{r.id}</Text>
             <View style={s.badges}>
               <View style={s.itemBadge}><Text style={s.itemBadgeText}>{r.item}</Text></View>
               <View style={[s.statusBadge, { backgroundColor: statusStyle.bg }]}>
@@ -163,12 +183,16 @@ export default function Records() {
           </TouchableOpacity>
         </View>
         <View style={s.cardActions}>
+          <TouchableOpacity testID={`edit-${r.id}`} style={s.actionBtn} onPress={() => startEdit(r)}>
+            <Ionicons name="create-outline" size={16} color={C.primary} />
+            <Text style={s.actionText}>Edit</Text>
+          </TouchableOpacity>
+
           <TouchableOpacity testID={`receipt-${r.id}`} style={s.actionBtn} onPress={() => setReceiptRecord(r)}>
             <Ionicons name="receipt-outline" size={16} color={C.primary} />
             <Text style={s.actionText}>Receipt</Text>
           </TouchableOpacity>
 
-          {/* MULTIPLE REMINDERS: Always available when status is Repaired */}
           {r.status === 'Repaired' && (
             <TouchableOpacity testID={`reminder-${r.id}`} style={[s.actionBtn, { backgroundColor: '#E8FAF0' }]} onPress={() => sendReminderWA(r)}>
               <Ionicons name="logo-whatsapp" size={16} color={C.whatsapp} />
@@ -199,7 +223,7 @@ export default function Records() {
       <View style={s.header}>
         <Text style={s.headerTitle}>Records</Text>
         <TextInput testID="search-input" style={s.searchInput} value={search} onChangeText={setSearch}
-          placeholder="Search by name, phone, item..." placeholderTextColor={C.textMuted} />
+          placeholder="Search by name, phone, job ID..." placeholderTextColor={C.textMuted} />
       </View>
 
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.filtersRow} style={s.filtersScroll}>
@@ -214,11 +238,6 @@ export default function Records() {
 
       <View style={s.countRow}>
         <Text testID="records-count" style={s.countText}>{filtered.length} entries</Text>
-        {records.length > 0 && (
-          <TouchableOpacity testID="btn-clear-all" onPress={handleClearAll}>
-            <Text style={s.clearText}>Clear All</Text>
-          </TouchableOpacity>
-        )}
       </View>
 
       <FlatList
@@ -234,9 +253,48 @@ export default function Records() {
         }
       />
 
+      {/* Edit Modal */}
+      <Modal visible={!!editRecord} transparent animationType="slide">
+        <View style={s.modalOverlay}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ justifyContent: 'flex-end' }}>
+            <View style={s.editBox}>
+              <View style={s.editHeader}>
+                <Text style={s.editTitle}>Edit Record #{editRecord?.id}</Text>
+                <TouchableOpacity testID="close-edit" onPress={() => setEditRecord(null)}>
+                  <Ionicons name="close" size={24} color={C.primary} />
+                </TouchableOpacity>
+              </View>
+              <ScrollView contentContainerStyle={{ padding: 20 }} keyboardShouldPersistTaps="handled">
+                <Text style={s.editLabel}>NAME</Text>
+                <TextInput testID="edit-name" style={s.editInput} value={editName} onChangeText={setEditName} />
+                <Text style={s.editLabel}>PHONE</Text>
+                <TextInput testID="edit-phone" style={s.editInput} value={editPhone} onChangeText={setEditPhone} keyboardType="phone-pad" />
+                <Text style={s.editLabel}>ITEM TYPE</Text>
+                <View style={s.editItemRow}>
+                  {ITEM_TYPES.map(it => (
+                    <TouchableOpacity key={it.key} testID={`edit-item-${it.key.toLowerCase()}`}
+                      style={[s.editItemBtn, editItem === it.key && s.editItemBtnActive]}
+                      onPress={() => setEditItem(it.key)}>
+                      <Text style={s.editItemIcon}>{it.icon}</Text>
+                      <Text style={[s.editItemLabel, editItem === it.key && s.editItemLabelActive]}>{it.label}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+                <Text style={s.editLabel}>ISSUE / FAULT</Text>
+                <TextInput testID="edit-issue" style={[s.editInput, { minHeight: 60 }]} value={editIssue} onChangeText={setEditIssue} multiline textAlignVertical="top" />
+                <TouchableOpacity testID="btn-save-edit" style={s.editSaveBtn} onPress={saveEdit}>
+                  <Ionicons name="checkmark-circle" size={20} color={C.primaryFg} />
+                  <Text style={s.editSaveBtnText}>Save Changes</Text>
+                </TouchableOpacity>
+              </ScrollView>
+            </View>
+          </KeyboardAvoidingView>
+        </View>
+      </Modal>
+
       {/* Receipt Modal */}
       <Modal visible={!!receiptRecord} transparent animationType="fade">
-        <View style={s.modalOverlay}>
+        <View style={s.receiptOverlay}>
           <ScrollView contentContainerStyle={s.receiptScrollContent}>
             <View style={s.receiptBox}>
               <TouchableOpacity testID="close-receipt-modal" style={s.receiptClose} onPress={() => setReceiptRecord(null)}>
@@ -311,7 +369,6 @@ const s = StyleSheet.create({
   chipTextActive: { color: C.primaryFg },
   countRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingVertical: 10 },
   countText: { fontSize: 13, color: C.textMuted, fontWeight: '600' },
-  clearText: { fontSize: 13, color: C.red, fontWeight: '700' },
   list: { padding: 20, paddingTop: 4 },
   card: { backgroundColor: C.surface, borderRadius: 12, borderWidth: 1, borderColor: C.border, marginBottom: 12, overflow: 'hidden' },
   cardTop: { flexDirection: 'row', padding: 14, gap: 12 },
@@ -320,6 +377,7 @@ const s = StyleSheet.create({
   cardInfo: { flex: 1 },
   cardName: { fontSize: 16, fontWeight: '700', color: C.text },
   cardPhone: { fontSize: 13, color: C.textMuted, marginTop: 2 },
+  cardJobId: { fontSize: 12, color: C.blue, fontWeight: '600', marginTop: 2 },
   badges: { flexDirection: 'row', gap: 8, marginTop: 6 },
   itemBadge: { backgroundColor: C.secondary, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 4 },
   itemBadgeText: { fontSize: 11, fontWeight: '700', color: C.text },
@@ -328,12 +386,28 @@ const s = StyleSheet.create({
   cardIssue: { fontSize: 12, color: C.textMuted, marginTop: 4 },
   cardDate: { fontSize: 11, color: C.textMuted, marginTop: 2 },
   deleteBtn: { padding: 4 },
-  cardActions: { flexDirection: 'row', borderTopWidth: 1, borderTopColor: C.border, paddingHorizontal: 10, paddingVertical: 8, gap: 8 },
+  cardActions: { flexDirection: 'row', borderTopWidth: 1, borderTopColor: C.border, paddingHorizontal: 10, paddingVertical: 8, gap: 6, flexWrap: 'wrap' },
   actionBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6, backgroundColor: C.secondary },
   actionText: { fontSize: 12, fontWeight: '700', color: C.text },
   empty: { alignItems: 'center', justifyContent: 'center', paddingTop: 80 },
   emptyText: { fontSize: 16, color: C.textMuted, marginTop: 12 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)' },
+  // Edit Modal
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  editBox: { backgroundColor: C.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '85%' },
+  editHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, borderBottomWidth: 1, borderBottomColor: C.border },
+  editTitle: { fontSize: 18, fontWeight: '700', color: C.primary },
+  editLabel: { fontSize: 11, fontWeight: '700', color: C.textMuted, letterSpacing: 1.5, marginBottom: 6, marginTop: 14 },
+  editInput: { backgroundColor: C.bg, borderWidth: 1, borderColor: C.border, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, color: C.text },
+  editItemRow: { flexDirection: 'row', gap: 10 },
+  editItemBtn: { flex: 1, alignItems: 'center', backgroundColor: C.bg, borderWidth: 1, borderColor: C.border, borderRadius: 10, paddingVertical: 12, gap: 4 },
+  editItemBtnActive: { borderColor: C.primary, backgroundColor: C.primary },
+  editItemIcon: { fontSize: 22 },
+  editItemLabel: { fontSize: 12, fontWeight: '700', color: C.text },
+  editItemLabelActive: { color: C.primaryFg },
+  editSaveBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, backgroundColor: C.primary, borderRadius: 12, paddingVertical: 16, marginTop: 20, marginBottom: 20 },
+  editSaveBtnText: { fontSize: 16, fontWeight: '700', color: C.primaryFg },
+  // Receipt Modal
+  receiptOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)' },
   receiptScrollContent: { flexGrow: 1, justifyContent: 'center', padding: 20 },
   receiptBox: { backgroundColor: C.surface, borderRadius: 16, padding: 24, position: 'relative' },
   receiptClose: { position: 'absolute', top: 16, right: 16, zIndex: 1 },

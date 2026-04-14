@@ -58,3 +58,16 @@ export const ITEM_TYPES = [
   { key: 'Spectacle', icon: '👓', label: 'Spectacle' },
   { key: 'Goggle', icon: '🥽', label: 'Goggle' },
 ];
+
+export const DELIVERY_MSG = `"Dear Customer,
+Thank you for choosing Swissa Watch and Opticals. We request you to please collect your belongings within 7 days. After this time, we may not be in a position to take responsibility. Your understanding is highly appreciated."
+
+"પ્રિય ગ્રાહક,
+Swissa Watch and Opticals પસંદ કરવા બદલ આભાર. આપને વિનંતી છે કે કૃપા કરીને 7 દિવસની અંદર આપનો સામાન લઈ જશો. આ સમય બાદ, અમે તેની જવાબદારી લેવા માટે સક્ષમ નહીં હોઈએ. આપના સહકાર બદલ આભાર."
+
+"प्रिय ग्राहक,
+Swissa Watch and Opticals को चुनने के लिए धन्यवाद। आपसे अनुरोध है कि कृपया 7 दिनों के भीतर अपना सामान ले जाएँ। इसके बाद, हम इसकी ज़िम्मेदारी लेने में सक्षम नहीं होंगे। आपके सहयोग के लिए धन्यवाद।"`;
+
+export function generateJobId(): string {
+  return String(Math.floor(10000 + Math.random() * 90000));
+}

@@ -9,8 +9,8 @@ import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import * as Linking from 'expo-linking';
 import { addRecord } from '../src/database';
-import { C, COUNTRY_CODES, SHOP, ITEM_TYPES } from '../src/constants';
-import { RepairRecord } from '../src/types';
+import { C, COUNTRY_CODES, SHOP, ITEM_TYPES, generateJobId } from '../src/constants';
+import { RepairRecord, ContactItem } from '../src/types';
 
 export default function NewEntry() {
   const [name, setName] = useState('');
@@ -24,6 +24,9 @@ export default function NewEntry() {
   const [savedRecord, setSavedRecord] = useState<RepairRecord | null>(null);
   const [toast, setToast] = useState<{ msg: string; err: boolean } | null>(null);
   const [saving, setSaving] = useState(false);
+  const [contacts, setContacts] = useState<ContactItem[]>([]);
+  const [showContactPicker, setShowContactPicker] = useState(false);
+  const [contactSearch, setContactSearch] = useState('');
 
   const selectedCountry = COUNTRY_CODES.find(c => c.code === countryCode);
 
@@ -31,6 +34,62 @@ export default function NewEntry() {
     setToast({ msg, err });
     setTimeout(() => setToast(null), 3000);
   }
+
+  async function openContactPicker() {
+    try {
+      if (Platform.OS === 'web') {
+        showToastMsg('Contact picker available on mobile only', true);
+        return;
+      }
+      const Contacts = require('expo-contacts');
+      const { status } = await Contacts.requestPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission needed', 'Contacts access is required to pick a contact.');
+        return;
+      }
+      const { data } = await Contacts.getContactsAsync({
+        fields: [Contacts.Fields.PhoneNumbers, Contacts.Fields.Name],
+        sort: Contacts.SortTypes.FirstName,
+      });
+      const mapped: ContactItem[] = [];
+      for (const c of data) {
+        if (c.phoneNumbers && c.phoneNumbers.length > 0) {
+          mapped.push({
+            id: c.id || String(Math.random()),
+            name: c.name || 'Unknown',
+            phone: c.phoneNumbers[0].number || '',
+          });
+        }
+      }
+      setContacts(mapped);
+      setContactSearch('');
+      setShowContactPicker(true);
+    } catch (e) {
+      showToastMsg('Could not load contacts', true);
+    }
+  }
+
+  function selectContact(contact: ContactItem) {
+    setName(contact.name);
+    const raw = contact.phone.replace(/[\s\-()]/g, '');
+    if (raw.startsWith('+')) {
+      const matched = COUNTRY_CODES.find(cc => raw.startsWith(cc.code));
+      if (matched) {
+        setCountryCode(matched.code);
+        setPhone(raw.slice(matched.code.length));
+      } else {
+        setPhone(raw.replace(/^\+/, ''));
+      }
+    } else {
+      setPhone(raw);
+    }
+    setShowContactPicker(false);
+  }
+
+  const filteredContacts = contacts.filter(c => {
+    const q = contactSearch.toLowerCase();
+    return !q || c.name.toLowerCase().includes(q) || c.phone.includes(q);
+  });
 
   async function handleTakePhoto() {
     try {
@@ -43,7 +102,7 @@ export default function NewEntry() {
       if (!result.canceled && result.assets[0]?.base64) {
         setPhoto(`data:image/jpeg;base64,${result.assets[0].base64}`);
       }
-    } catch (e) {
+    } catch {
       showToastMsg('Camera not available', true);
     }
   }
@@ -59,7 +118,7 @@ export default function NewEntry() {
       if (!result.canceled && result.assets[0]?.base64) {
         setPhoto(`data:image/jpeg;base64,${result.assets[0].base64}`);
       }
-    } catch (e) {
+    } catch {
       showToastMsg('Gallery not available', true);
     }
   }
@@ -71,7 +130,7 @@ export default function NewEntry() {
 
     setSaving(true);
     const record: RepairRecord = {
-      id: Date.now().toString(),
+      id: generateJobId(),
       name: name.trim(),
       phone: phone.trim(),
       countryCode,
@@ -90,7 +149,7 @@ export default function NewEntry() {
       setShowReceipt(true);
       showToastMsg('Record saved successfully!');
       setName(''); setPhone(''); setSelectedItem(''); setIssue(''); setPhoto(null);
-    } catch (e) {
+    } catch {
       showToastMsg('Failed to save record', true);
     } finally {
       setSaving(false);
@@ -101,7 +160,7 @@ export default function NewEntry() {
     if (!savedRecord) return;
     const r = savedRecord;
     const cleanPhone = (r.countryCode + r.phone).replace(/\D/g, '');
-    const msg = `🏪 *SWISSA — Watch & Opticals*\n${SHOP.address}\n\n📋 *REPAIR RECEIPT*\n\n🔖 Job ID: #${r.id}\n👤 Name: ${r.name}\n📱 Phone: ${r.countryCode} ${r.phone}\n🔧 Item: ${r.item}\n❓ Issue: ${r.issue || 'N/A'}\n📅 Date In: ${r.date}\n📊 Status: ${r.status}\n\nHI ${r.name.toUpperCase()}! IT'S OUR SINCERE REQUEST TO PLEASE SAVE THIS NUMBER TO RECEIVE UPDATES ABOUT YOUR ${r.item.toUpperCase()}.\n\nThank you for choosing SWISSA! 🙏\nWe will notify you once your item is ready.`;
+    const msg = `🏪 *SWISSA — Watch & Opticals*\n${SHOP.address}\n\n📋 *REPAIR RECEIPT*\n\n🔖 Job ID: #${r.id}\n👤 Name: ${r.name}\n📱 Phone: ${r.countryCode} ${r.phone}\n🔧 Item: ${r.item}\n❓ Issue: ${r.issue || 'N/A'}\n📅 Date In: ${r.date}\n📊 Status: ${r.status}\n\nHI ${r.name.toUpperCase()}! PLEASE SAVE THIS NUMBER TO RECEIVE UPDATES ABOUT YOUR ${r.item.toUpperCase()}.\n\nThank you for choosing SWISSA! 🙏\nWe will notify you once your item is ready.`;
     Linking.openURL(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`);
   }
 
@@ -115,6 +174,12 @@ export default function NewEntry() {
 
         <ScrollView style={s.scroll} contentContainerStyle={s.scrollContent} keyboardShouldPersistTaps="handled">
           <Text style={s.sectionTitle}>New Customer Entry</Text>
+
+          {/* Pick from Contacts button */}
+          <TouchableOpacity testID="btn-contacts" style={s.contactsBtn} onPress={openContactPicker}>
+            <Ionicons name="person-circle-outline" size={20} color={C.blue} />
+            <Text style={s.contactsBtnText}>Pick from Contacts</Text>
+          </TouchableOpacity>
 
           <View style={s.field}>
             <Text style={s.label}>FULL NAME</Text>
@@ -210,6 +275,35 @@ export default function NewEntry() {
           </View>
         </Modal>
 
+        {/* Contact Picker */}
+        <Modal visible={showContactPicker} transparent animationType="slide">
+          <View style={s.modalOverlay}>
+            <View style={[s.modalBox, { maxHeight: '80%' }]}>
+              <View style={s.modalHeader}>
+                <Text style={s.modalTitle}>Pick a Contact</Text>
+                <TouchableOpacity testID="close-contact-picker" onPress={() => setShowContactPicker(false)}>
+                  <Ionicons name="close" size={24} color={C.primary} />
+                </TouchableOpacity>
+              </View>
+              <View style={{ paddingHorizontal: 16, paddingBottom: 8 }}>
+                <TextInput testID="contact-search" style={s.input} value={contactSearch}
+                  onChangeText={setContactSearch} placeholder="Search contacts..." placeholderTextColor={C.textMuted} />
+              </View>
+              <FlatList data={filteredContacts} keyExtractor={item => item.id}
+                renderItem={({ item }) => (
+                  <TouchableOpacity style={s.countryItem} onPress={() => selectContact(item)}>
+                    <View>
+                      <Text style={[s.countryItemText, { fontWeight: '700' }]}>{item.name}</Text>
+                      <Text style={{ fontSize: 13, color: C.textMuted, marginTop: 2 }}>{item.phone}</Text>
+                    </View>
+                  </TouchableOpacity>
+                )}
+                ListEmptyComponent={<Text style={{ padding: 20, color: C.textMuted, textAlign: 'center' }}>No contacts found</Text>}
+              />
+            </View>
+          </View>
+        </Modal>
+
         {/* Receipt Modal */}
         <Modal visible={showReceipt} transparent animationType="fade">
           <View style={s.modalOverlay}>
@@ -226,13 +320,13 @@ export default function NewEntry() {
                 <View style={s.divider} />
                 {savedRecord && (
                   <>
-                    <ReceiptRow label="Job ID" value={`#${savedRecord.id}`} />
-                    <ReceiptRow label="Name" value={savedRecord.name} />
-                    <ReceiptRow label="Phone" value={`${savedRecord.countryCode} ${savedRecord.phone}`} />
-                    <ReceiptRow label="Item" value={savedRecord.item} />
-                    {savedRecord.issue ? <ReceiptRow label="Issue" value={savedRecord.issue} /> : null}
-                    <ReceiptRow label="Date In" value={savedRecord.date} />
-                    <ReceiptRow label="Status" value={savedRecord.status} valueColor={C.amber800} />
+                    <RRow label="Job ID" value={`#${savedRecord.id}`} />
+                    <RRow label="Name" value={savedRecord.name} />
+                    <RRow label="Phone" value={`${savedRecord.countryCode} ${savedRecord.phone}`} />
+                    <RRow label="Item" value={savedRecord.item} />
+                    {savedRecord.issue ? <RRow label="Issue" value={savedRecord.issue} /> : null}
+                    <RRow label="Date In" value={savedRecord.date} />
+                    <RRow label="Status" value={savedRecord.status} valueColor={C.amber800} />
                   </>
                 )}
                 <View style={s.divider} />
@@ -260,7 +354,7 @@ export default function NewEntry() {
   );
 }
 
-function ReceiptRow({ label, value, valueColor }: { label: string; value: string; valueColor?: string }) {
+function RRow({ label, value, valueColor }: { label: string; value: string; valueColor?: string }) {
   return (
     <View style={s.receiptRow}>
       <Text style={s.receiptLabel}>{label}</Text>
@@ -276,7 +370,9 @@ const s = StyleSheet.create({
   headerSub: { fontSize: 13, color: C.textMuted, fontWeight: '600', letterSpacing: 1, marginTop: 2 },
   scroll: { flex: 1 },
   scrollContent: { padding: 20 },
-  sectionTitle: { fontSize: 20, fontWeight: '700', color: C.primary, marginBottom: 20 },
+  sectionTitle: { fontSize: 20, fontWeight: '700', color: C.primary, marginBottom: 16 },
+  contactsBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#EFF6FF', borderWidth: 1, borderColor: '#BFDBFE', borderRadius: 10, paddingVertical: 12, marginBottom: 20 },
+  contactsBtnText: { fontSize: 15, fontWeight: '700', color: C.blue },
   field: { marginBottom: 20 },
   label: { fontSize: 11, fontWeight: '700', color: C.textMuted, letterSpacing: 1.5, marginBottom: 8 },
   input: { backgroundColor: C.surface, borderWidth: 1, borderColor: C.border, borderRadius: 10, paddingHorizontal: 16, paddingVertical: 14, fontSize: 16, color: C.text },

@@ -46,14 +46,14 @@ export default function Layout() {
           backgroundColor: '#FFFFFF',
           borderTopColor: '#E2E8F0',
           borderTopWidth: 1,
-          height: 64,
-          paddingBottom: 10,
-          paddingTop: 6,
+          height: 80,
+          paddingBottom: 22,
+          paddingTop: 8,
         },
         tabBarActiveTintColor: '#0A0A0A',
         tabBarInactiveTintColor: '#94A3B8',
         tabBarLabelStyle: {
-          fontSize: 11,
+          fontSize: 12,
           fontWeight: '700',
           letterSpacing: 0.5,
         },
@@ -78,21 +78,18 @@ export default function Layout() {
         }}
       />
       <Tabs.Screen
-        name="promo"
-        options={{
-          title: 'Promo',
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="megaphone-outline" size={size} color={color} />
-          ),
-        }}
-      />
-      <Tabs.Screen
         name="settings"
         options={{
           title: 'Settings',
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="settings-outline" size={size} color={color} />
           ),
+        }}
+      />
+      <Tabs.Screen
+        name="promo"
+        options={{
+          href: null,
         }}
       />
     </Tabs>

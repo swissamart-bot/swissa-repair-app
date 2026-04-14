@@ -17,3 +17,9 @@ export interface BackupData {
   timestamp: string;
   records: RepairRecord[];
 }
+
+export interface ContactItem {
+  id: string;
+  name: string;
+  phone: string;
+}

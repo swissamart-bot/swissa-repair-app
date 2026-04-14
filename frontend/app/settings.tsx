@@ -6,7 +6,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router';
-import { getRecordCount, getSetting, setSetting, exportData, importData } from '../src/database';
+import { getRecordCount, getSetting, setSetting, exportData, importData, clearAllRecords } from '../src/database';
 import { C, SHOP } from '../src/constants';
 
 export default function Settings() {
@@ -44,7 +44,6 @@ export default function Settings() {
       const data = await exportData();
 
       if (Platform.OS === 'web') {
-        // Web: download as file
         const blob = new Blob([data], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -53,7 +52,6 @@ export default function Settings() {
         a.click();
         URL.revokeObjectURL(url);
       } else {
-        // Mobile: save to document directory and share
         const FileSystem = require('expo-file-system');
         const Sharing = require('expo-sharing');
         const dir = FileSystem.documentDirectory + 'SwissaBackups/';
@@ -66,7 +64,7 @@ export default function Settings() {
         if (isAvailable) {
           await Sharing.shareAsync(fileUri, {
             mimeType: 'application/json',
-            dialogTitle: 'Save Swissa Backup',
+            dialogTitle: 'Save to Swissa repair database folder',
           });
         }
       }
@@ -86,7 +84,6 @@ export default function Settings() {
     setLoading(true);
     try {
       if (Platform.OS === 'web') {
-        // Web: use file input
         const input = document.createElement('input');
         input.type = 'file';
         input.accept = '.json';
@@ -119,6 +116,38 @@ export default function Settings() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function handleClearAll() {
+    Alert.alert(
+      '⚠️ Clear All Records',
+      'This will permanently delete ALL records. This cannot be undone. Are you absolutely sure?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete Everything',
+          style: 'destructive',
+          onPress: () => {
+            Alert.alert(
+              'Final Confirmation',
+              'Type DELETE to confirm. Are you sure?',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Yes, Clear All',
+                  style: 'destructive',
+                  onPress: async () => {
+                    await clearAllRecords();
+                    await loadSettings();
+                    showToastMsg('All records cleared');
+                  },
+                },
+              ]
+            );
+          },
+        },
+      ]
+    );
   }
 
   function formatDate(iso: string | null) {
@@ -174,7 +203,7 @@ export default function Settings() {
           </TouchableOpacity>
 
           <Text style={s.hint}>
-            Backup saves all records as a JSON file. On mobile, you can save it to "Downloads/Swissa repair database/" folder or share via WhatsApp/Email.
+            Backup saves all records as a JSON file. On mobile, share to Google Drive, WhatsApp, or save to "Downloads/Swissa repair database/" folder.
           </Text>
         </View>
 
@@ -196,6 +225,21 @@ export default function Settings() {
           }} disabled={loading}>
             <Ionicons name="folder-open-outline" size={20} color={C.primary} />
             <Text style={s.secondaryBtnText}>Import Backup File</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Danger Zone */}
+        <View style={[s.card, { borderColor: '#FCA5A5' }]}>
+          <View style={s.cardHeader}>
+            <Ionicons name="warning-outline" size={22} color={C.red} />
+            <Text style={[s.cardTitle, { color: C.red }]}>Danger Zone</Text>
+          </View>
+
+          <Text style={s.restoreNote}>Permanently delete all repair records from the database. This action cannot be undone.</Text>
+
+          <TouchableOpacity testID="btn-clear-all" style={s.dangerBtn} onPress={handleClearAll}>
+            <Ionicons name="trash-outline" size={20} color={C.red} />
+            <Text style={s.dangerBtnText}>Clear All Records</Text>
           </TouchableOpacity>
         </View>
 
@@ -246,6 +290,8 @@ const s = StyleSheet.create({
   primaryBtnText: { fontSize: 16, fontWeight: '700', color: C.primaryFg },
   secondaryBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, backgroundColor: C.surface, borderWidth: 1, borderColor: C.border, borderRadius: 12, paddingVertical: 14, marginTop: 12 },
   secondaryBtnText: { fontSize: 15, fontWeight: '700', color: C.primary },
+  dangerBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, backgroundColor: '#FEF2F2', borderWidth: 1, borderColor: '#FCA5A5', borderRadius: 12, paddingVertical: 14, marginTop: 12 },
+  dangerBtnText: { fontSize: 15, fontWeight: '700', color: C.red },
   hint: { fontSize: 12, color: C.textMuted, marginTop: 12, lineHeight: 18 },
   restoreNote: { fontSize: 13, color: C.textMuted, lineHeight: 18, marginBottom: 4 },
   aboutName: { fontSize: 22, fontWeight: '900', color: C.primary, textAlign: 'center', letterSpacing: -0.5 },

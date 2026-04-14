@@ -12,7 +12,8 @@
       "supportsTablet": true,
       "infoPlist": {
         "NSCameraUsageDescription": "Take photos of repair items",
-        "NSPhotoLibraryUsageDescription": "Select item photos from gallery"
+        "NSPhotoLibraryUsageDescription": "Select item photos from gallery",
+        "NSContactsUsageDescription": "Pick customer from contacts"
       }
     },
     "android": {
@@ -20,11 +21,11 @@
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#FAFAFA"
       },
-      "edgeToEdgeEnabled": true,
       "permissions": [
         "CAMERA",
         "READ_EXTERNAL_STORAGE",
-        "WRITE_EXTERNAL_STORAGE"
+        "WRITE_EXTERNAL_STORAGE",
+        "READ_CONTACTS"
       ]
     },
     "web": {
@@ -35,6 +36,12 @@
     "plugins": [
       "expo-router",
       "expo-sqlite",
+      [
+        "expo-contacts",
+        {
+          "contactsPermission": "Pick customer details from contacts"
+        }
+      ],
       [
         "expo-image-picker",
         {
