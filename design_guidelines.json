@@ -1,0 +1,91 @@
+{
+  "theme": "light",
+  "archetype": "Swiss & High-Contrast",
+  "typography": {
+    "fonts": {
+      "heading": "Cabinet Grotesk",
+      "body": "IBM Plex Sans",
+      "monospace": "JetBrains Mono"
+    },
+    "hierarchy": {
+      "h1": "text-4xl font-black tracking-tighter leading-none text-slate-950",
+      "h2": "text-2xl font-bold tracking-tight text-slate-900",
+      "h3": "text-xl font-semibold tracking-tight text-slate-900",
+      "body": "text-base font-normal leading-relaxed text-slate-700",
+      "label": "text-xs font-bold uppercase tracking-[0.2em] text-slate-500"
+    }
+  },
+  "colors": {
+    "background": "#FAFAFA",
+    "surface": "#FFFFFF",
+    "primary": {
+      "DEFAULT": "#0A0A0A",
+      "foreground": "#FFFFFF"
+    },
+    "secondary": {
+      "DEFAULT": "#F1F5F9",
+      "foreground": "#0F172A"
+    },
+    "accent": {
+      "blue": "#2563EB",
+      "green": "#16A34A",
+      "amber": "#D97706",
+      "slate": "#64748B",
+      "whatsapp": "#25D366"
+    },
+    "border": "#E2E8F0",
+    "text": {
+      "main": "#0A0A0A",
+      "muted": "#64748B"
+    }
+  },
+  "layout": {
+    "spacing": {
+      "container": "p-6",
+      "item_gap": "gap-4",
+      "section_gap": "gap-8"
+    },
+    "border_radius": "rounded-none md:rounded-lg",
+    "shadows": "none"
+  },
+  "components": {
+    "cards": "bg-white border border-slate-200 p-6 rounded-lg",
+    "buttons": {
+      "primary": "bg-slate-950 text-white p-4 rounded-lg font-bold items-center justify-center active:bg-slate-800 flex-row gap-2",
+      "secondary": "bg-white border border-slate-200 text-slate-950 p-4 rounded-lg font-bold items-center justify-center active:bg-slate-50 flex-row gap-2",
+      "whatsapp": "bg-[#25D366] text-white p-4 rounded-lg font-bold items-center justify-center active:bg-[#1DA851] flex-row gap-2"
+    },
+    "inputs": "bg-white border border-slate-200 p-4 rounded-lg text-slate-900 text-base focus:border-slate-950",
+    "badges": {
+      "pending": "bg-amber-100 text-amber-800 px-2 py-1 rounded text-xs font-bold uppercase tracking-wider",
+      "repaired": "bg-green-100 text-green-800 px-2 py-1 rounded text-xs font-bold uppercase tracking-wider",
+      "delivered": "bg-slate-100 text-slate-800 px-2 py-1 rounded text-xs font-bold uppercase tracking-wider"
+    }
+  },
+  "image_urls": [
+    {
+      "url": "https://images.unsplash.com/photo-1666374796260-6f9d3af1e3ef?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxOTF8MHwxfHNlYXJjaHwyfHxsdXh1cnklMjB3YXRjaCUyMG1hY3JvfGVufDB8fHx8MTc3NjEyNzI2OHww&ixlib=rb-4.1.0&q=85",
+      "category": "placeholder_watch_repair",
+      "description": "Close up of a watch mechanism for use in empty states or placeholder gallery items."
+    },
+    {
+      "url": "https://images.unsplash.com/photo-1585600739052-a1d4c6f92067?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1MDZ8MHwxfHNlYXJjaHwyfHxleWVnbGFzc2VzJTIwcmVwYWlyfGVufDB8fHx8MTc3NjEyNzI2OHww&ixlib=rb-4.1.0&q=85",
+      "category": "placeholder_spectacle_repair",
+      "description": "Eyeglasses on a table, useful for empty states for spectacles."
+    }
+  ],
+  "icons": {
+    "library": "lucide-react-native",
+    "instructions": "Use lucide-react-native for crisp, standard icons. Use stroke-width 1.5 or 2 depending on the weight needed."
+  },
+  "instructions_to_main_agent": [
+    "This is an Expo React Native app. Apply the provided Tailwind-equivalent utility classes using NativeWind or via StyleSheet constants that match the design intent.",
+    "The UI should look like a premium 'Swiss' utility: strict alignment, high contrast (black and white with very sparse color accents for statuses), and clean 1px borders.",
+    "Avoid heavy shadows. Rely on 'Optical Clarity' and 1px borders to separate elements.",
+    "For the main 'Repaired' and 'Delivered' statuses, use the green and slate accent colors respectively.",
+    "WhatsApp buttons must use a distinct WhatsApp Green (#25D366).",
+    "Ensure all interactive components (buttons, list items) use TouchableOpacity or Pressable with active feedback.",
+    "The App Header/Navigation should have a stark white background with bold black text. No translucent generic mobile headers.",
+    "CRITICAL: Implement `testID` (the React Native equivalent of `data-testid`) on all interactive and key informational elements (e.g., testID=\"new-customer-submit-button\")."
+  ]
+}
