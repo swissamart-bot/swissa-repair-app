@@ -7,7 +7,6 @@
     "icon": "./assets/images/icon.png",
     "scheme": "swissa",
     "userInterfaceStyle": "light",
-    "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
@@ -21,6 +20,7 @@
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#FAFAFA"
       },
+      "package": "com.swissamartbot.swissa",
       "permissions": [
         "CAMERA",
         "READ_EXTERNAL_STORAGE",
