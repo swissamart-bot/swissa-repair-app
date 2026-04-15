@@ -6,6 +6,9 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router';
+import * as FileSystem from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
+import * as DocumentPicker from 'expo-document-picker';
 import { getRecordCount, getSetting, setSetting, exportData, importData, clearAllRecords } from '../src/database';
 import { C, SHOP } from '../src/constants';
 
@@ -52,8 +55,6 @@ export default function Settings() {
         a.click();
         URL.revokeObjectURL(url);
       } else {
-        const FileSystem = require('expo-file-system');
-        const Sharing = require('expo-sharing');
         const dir = FileSystem.documentDirectory + 'SwissaBackups/';
         await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
         const filename = `swissa_backup_${new Date().toISOString().split('T')[0]}_${Date.now()}.json`;
@@ -66,15 +67,17 @@ export default function Settings() {
             mimeType: 'application/json',
             dialogTitle: 'Save to Swissa repair database folder',
           });
+        } else {
+          showToastMsg('Backup saved to app storage');
         }
       }
 
       await setSetting('lastBackupTime', new Date().toISOString());
       setLastBackup(new Date().toISOString());
       showToastMsg('Backup created successfully!');
-    } catch (e) {
+    } catch (e: any) {
       console.warn('Backup failed:', e);
-      showToastMsg('Backup failed', true);
+      showToastMsg('Backup failed: ' + (e?.message || 'Unknown error'), true);
     } finally {
       setLoading(false);
     }
@@ -100,8 +103,6 @@ export default function Settings() {
         return;
       }
 
-      const DocumentPicker = require('expo-document-picker');
-      const FileSystem = require('expo-file-system');
       const result = await DocumentPicker.getDocumentAsync({ type: 'application/json' });
 
       if (!result.canceled && result.assets?.[0]) {
@@ -110,9 +111,9 @@ export default function Settings() {
         await loadSettings();
         showToastMsg(`Imported ${count} records!`);
       }
-    } catch (e) {
+    } catch (e: any) {
       console.warn('Import failed:', e);
-      showToastMsg('Import failed - invalid backup file', true);
+      showToastMsg('Import failed: ' + (e?.message || 'Invalid file'), true);
     } finally {
       setLoading(false);
     }
