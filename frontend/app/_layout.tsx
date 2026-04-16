@@ -24,7 +24,7 @@ export default function Layout() {
       const now = Date.now();
 
       if (now - lastTime > 24 * 60 * 60 * 1000) {
-        const FileSystem = require('expo-file-system');
+        const FileSystem = require('expo-file-system/legacy');
         const data = await exportData();
         const dir = FileSystem.documentDirectory + 'SwissaBackups/';
         await FileSystem.makeDirectoryAsync(dir, { intermediates: true });

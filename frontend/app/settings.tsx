@@ -6,10 +6,10 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
 import * as DocumentPicker from 'expo-document-picker';
-import { getRecordCount, getSetting, setSetting, exportData, importData, clearAllRecords } from '../src/database';
+import { getRecordCount, getSetting, setSetting, exportData, importData, clearAllRecords, getAllRecords } from '../src/database';
 import { C, SHOP } from '../src/constants';
 
 export default function Settings() {
@@ -156,6 +156,46 @@ export default function Settings() {
     return new Date(iso).toLocaleString();
   }
 
+  async function handleExportCSV() {
+    setLoading(true);
+    try {
+      const records = await getAllRecords();
+      if (records.length === 0) {
+        showToastMsg('No records to export', true);
+        return;
+      }
+      let csv = 'Job ID,Name,Mobile Number,Item,Issue,Status,Date\n';
+      for (const r of records) {
+        csv += `${r.id},"${r.name}",${r.countryCode}${r.phone},${r.item},"${r.issue || ''}",${r.status},"${r.date}"\n`;
+      }
+
+      if (Platform.OS === 'web') {
+        const blob = new Blob([csv], { type: 'text/csv' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `swissa_customers_${new Date().toISOString().split('T')[0]}.csv`;
+        a.click();
+      } else {
+        const filename = `swissa_customers_${new Date().toISOString().split('T')[0]}.csv`;
+        const fileUri = FileSystem.documentDirectory + filename;
+        await FileSystem.writeAsStringAsync(fileUri, csv);
+        const isAvailable = await Sharing.isAvailableAsync();
+        if (isAvailable) {
+          await Sharing.shareAsync(fileUri, {
+            mimeType: 'text/csv',
+            dialogTitle: 'Save Customer List (Excel/CSV)',
+          });
+        }
+      }
+      showToastMsg('Customer list exported!');
+    } catch (e: any) {
+      showToastMsg('Export failed: ' + (e?.message || 'Unknown error'), true);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <SafeAreaView style={s.safe} edges={['top']}>
       <View style={s.header}>
@@ -226,6 +266,21 @@ export default function Settings() {
           }} disabled={loading}>
             <Ionicons name="folder-open-outline" size={20} color={C.primary} />
             <Text style={s.secondaryBtnText}>Import Backup File</Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Export Customer List as Excel/CSV */}
+        <View style={s.card}>
+          <View style={s.cardHeader}>
+            <Ionicons name="grid-outline" size={22} color={C.primary} />
+            <Text style={s.cardTitle}>Export Customer List</Text>
+          </View>
+
+          <Text style={s.restoreNote}>Export all customer names and phone numbers as a CSV file (opens in Excel/Google Sheets). Share to Google Drive for easy access.</Text>
+
+          <TouchableOpacity testID="btn-export-csv" style={s.secondaryBtn} onPress={handleExportCSV} disabled={loading}>
+            <Ionicons name="document-text-outline" size={20} color={C.primary} />
+            <Text style={s.secondaryBtnText}>Export as Excel/CSV</Text>
           </TouchableOpacity>
         </View>
 
