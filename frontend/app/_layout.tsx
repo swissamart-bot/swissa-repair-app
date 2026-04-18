@@ -21,17 +21,19 @@ export default function Layout() {
 
       const lastBackup = await getSetting('lastBackupTime');
       const lastTime = lastBackup ? new Date(lastBackup).getTime() : 0;
-      const now = Date.now();
+      const now = new Date();
+      const hours = now.getHours();
 
-      if (now - lastTime > 24 * 60 * 60 * 1000) {
+      // Only backup between 9 PM and 10 PM, and if last backup was more than 20 hours ago
+      if (hours >= 21 && hours < 22 && (now.getTime() - lastTime > 20 * 60 * 60 * 1000)) {
         const FileSystem = require('expo-file-system/legacy');
         const data = await exportData();
         const dir = FileSystem.documentDirectory + 'SwissaBackups/';
         await FileSystem.makeDirectoryAsync(dir, { intermediates: true });
-        const dateStr = new Date().toISOString().replace(/[:.]/g, '-').split('T')[0];
+        const dateStr = now.toISOString().replace(/[:.]/g, '-').split('T')[0];
         const filename = `swissa_backup_${dateStr}.json`;
         await FileSystem.writeAsStringAsync(dir + filename, data);
-        await setSetting('lastBackupTime', new Date().toISOString());
+        await setSetting('lastBackupTime', now.toISOString());
       }
     } catch (e) {
       console.warn('Auto backup check failed:', e);

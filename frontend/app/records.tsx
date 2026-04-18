@@ -109,26 +109,26 @@ export default function Records() {
 
   function sendRepairedWA(r: RepairRecord) {
     const cleanPhone = (r.countryCode + r.phone).replace(/\D/g, '');
-    const msg = `🏪 *SWISSA — Watch & Opticals*\n\nHi ${r.name}! 👋\n\nGreat news! Your ${r.item} has been *REPAIRED* and is ready for collection. ✅\n\n🔖 Job ID: #${r.id}\n\nPlease visit us at your earliest convenience to collect your ${r.item}.\n\n📍 ${SHOP.address}\n\n${DELIVERY_MSG}\n\n⚠️ *SHOW THIS MESSAGE WHILE TAKING DELIVERY*\n⚠️ *SHARE THIS MESSAGE ONLY TO TRUSTED PEOPLE FOR TAKING DELIVERY*\n\nThank you for choosing SWISSA! 🙏`;
+    const msg = `🏪 *SWISSA — Watch & Opticals*\n\nHi ${r.name}! 👋\n\nYour ${r.item} is *READY* for collection. ✅\nઆપનું ${r.item} લેવા *તૈયાર* છે. ✅\nआपकी ${r.item} लेने के लिए *तैयार* है. ✅\n\n🔖 *Job ID: #${r.id}*\n\n📍 ${SHOP.address}\n\n${DELIVERY_MSG}\n\n⚠️ *SHOW THIS MESSAGE WHILE TAKING DELIVERY*\n⚠️ *SHARE THIS MESSAGE ONLY TO TRUSTED PEOPLE FOR TAKING DELIVERY*\n\nThank you for choosing SWISSA! 🙏`;
     Linking.openURL(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`);
   }
 
   function sendDeliveredWA(r: RepairRecord) {
     const cleanPhone = (r.countryCode + r.phone).replace(/\D/g, '');
-    const msg = `🏪 *SWISSA — Watch & Opticals*\n\nHi ${r.name}! 👋\n\nYour ${r.item} has been successfully *DELIVERED*. ✅\n\n🔖 Job ID: #${r.id}\n\nThank you for choosing SWISSA! 🙏\nWe hope to serve you again!`;
+    const msg = `🏪 *SWISSA — Watch & Opticals*\n\nHi ${r.name}! 👋\n\nYour ${r.item} has been successfully *DELIVERED*. ✅\n\n🔖 *Job ID: #${r.id}*\n\nThank you for choosing SWISSA! 🙏\nWe hope to serve you again!`;
     Linking.openURL(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`);
   }
 
   // KEY FIX: Send reminder multiple times for repaired items
   function sendReminderWA(r: RepairRecord) {
     const cleanPhone = (r.countryCode + r.phone).replace(/\D/g, '');
-    const msg = `🏪 *SWISSA — Watch & Opticals*\n\nHi ${r.name}! 👋\n\nThis is a friendly reminder that your ${r.item} has been *REPAIRED* and is waiting for you to collect. ✅\n\n🔖 Job ID: #${r.id}\n\nPlease visit us at your earliest convenience.\n\n📍 ${SHOP.address}\n\n${DELIVERY_MSG}\n\n⚠️ *SHOW THIS MESSAGE WHILE TAKING DELIVERY*\n⚠️ *SHARE THIS MESSAGE ONLY TO TRUSTED PEOPLE FOR TAKING DELIVERY*\n\nThank you! 🙏`;
+    const msg = `🏪 *SWISSA — Watch & Opticals*\n\nHi ${r.name}! 👋 Reminder:\n\nYour ${r.item} is *READY* for collection. ✅\nઆપનું ${r.item} લેવા *તૈયાર* છે. ✅\nआपकी ${r.item} लेने के लिए *तैयार* है. ✅\n\n🔖 *Job ID: #${r.id}*\n\n📍 ${SHOP.address}\n\n${DELIVERY_MSG}\n\n⚠️ *SHOW THIS MESSAGE WHILE TAKING DELIVERY*\n⚠️ *SHARE THIS MESSAGE ONLY TO TRUSTED PEOPLE FOR TAKING DELIVERY*\n\nThank you! 🙏`;
     Linking.openURL(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`);
   }
 
   function shareReceiptWA(r: RepairRecord) {
     const cleanPhone = (r.countryCode + r.phone).replace(/\D/g, '');
-    const msg = `🏪 *SWISSA — Watch & Opticals*\n${SHOP.address}\n\n📋 *REPAIR RECEIPT*\n\n🔖 Job ID: #${r.id}\n👤 Name: ${r.name}\n📱 Phone: ${r.countryCode} ${r.phone}\n🔧 Item: ${r.item}\n❓ Issue: ${r.issue || 'N/A'}\n📅 Date In: ${r.date}\n📊 Status: ${r.status}\n\nThank you for choosing SWISSA! 🙏`;
+    const msg = `🏪 *SWISSA — Watch & Opticals*\n${SHOP.address}\n\n📋 *REPAIR RECEIPT*\n\n🔖 *Job ID: #${r.id}*\n👤 Name: ${r.name}\n📱 Phone: ${r.countryCode} ${r.phone}\n🔧 Item: ${r.item}\n❓ Issue: ${r.issue || 'N/A'}\n📅 Date In: ${r.date}\n📊 Status: ${r.status}\n\nThank you for choosing SWISSA! 🙏`;
     Linking.openURL(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`);
   }
 
@@ -392,8 +392,8 @@ const s = StyleSheet.create({
   empty: { alignItems: 'center', justifyContent: 'center', paddingTop: 80 },
   emptyText: { fontSize: 16, color: C.textMuted, marginTop: 12 },
   // Edit Modal
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  editBox: { backgroundColor: C.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, maxHeight: '85%' },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-start', paddingTop: 40 },
+  editBox: { backgroundColor: C.surface, borderBottomLeftRadius: 20, borderBottomRightRadius: 20, maxHeight: '70%' },
   editHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, borderBottomWidth: 1, borderBottomColor: C.border },
   editTitle: { fontSize: 18, fontWeight: '700', color: C.primary },
   editLabel: { fontSize: 11, fontWeight: '700', color: C.textMuted, letterSpacing: 1.5, marginBottom: 6, marginTop: 14 },

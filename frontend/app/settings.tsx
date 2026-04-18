@@ -222,7 +222,7 @@ export default function Settings() {
 
           <View style={s.switchRow}>
             <View style={{ flex: 1 }}>
-              <Text style={s.switchLabel}>Auto backup every night</Text>
+              <Text style={s.switchLabel}>Auto backup every night at 9 PM</Text>
               <Text style={s.switchHint}>Saves to app storage automatically</Text>
             </View>
             <Switch

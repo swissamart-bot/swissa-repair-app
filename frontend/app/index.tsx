@@ -160,7 +160,7 @@ export default function NewEntry() {
     if (!savedRecord) return;
     const r = savedRecord;
     const cleanPhone = (r.countryCode + r.phone).replace(/\D/g, '');
-    const msg = `🏪 *SWISSA — Watch & Opticals*\n${SHOP.address}\n\n📋 *REPAIR RECEIPT*\n\n🔖 Job ID: #${r.id}\n👤 Name: ${r.name}\n📱 Phone: ${r.countryCode} ${r.phone}\n🔧 Item: ${r.item}\n❓ Issue: ${r.issue || 'N/A'}\n📅 Date In: ${r.date}\n📊 Status: ${r.status}\n\nHI ${r.name.toUpperCase()}! PLEASE SAVE THIS NUMBER TO RECEIVE UPDATES ABOUT YOUR ${r.item.toUpperCase()}.\n\nThank you for choosing SWISSA! 🙏\nWe will notify you once your item is ready.`;
+    const msg = `🏪 *SWISSA — Watch & Opticals*\n${SHOP.address}\n\n📋 *REPAIR RECEIPT*\n\n🔖 *Job ID: #${r.id}*\n👤 Name: ${r.name}\n📱 Phone: ${r.countryCode} ${r.phone}\n🔧 Item: ${r.item}\n❓ Issue: ${r.issue || 'N/A'}\n📅 Date In: ${r.date}\n📊 Status: ${r.status}\n\nHI ${r.name.toUpperCase()}! PLEASE SAVE THIS NUMBER TO RECEIVE UPDATES ABOUT YOUR ${r.item.toUpperCase()}.\n\nThank you for choosing SWISSA! 🙏\nWe will notify you once your item is ready.`;
     Linking.openURL(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`);
   }
 
