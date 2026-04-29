@@ -41,14 +41,15 @@ export async function setSetting(key: string, value: string): Promise<void> {
   memSettings[key] = value;
 }
 
-export async function exportData(): Promise<string> {
+export async function exportData(includePhotos = false): Promise<string> {
   const records = await getAllRecords();
+  const exportRecords = includePhotos ? records : records.map(r => ({ ...r, photo: null }));
   const data: BackupData = {
     version: '1.0',
     timestamp: new Date().toISOString(),
-    records,
+    records: exportRecords,
   };
-  return JSON.stringify(data, null, 2);
+  return JSON.stringify(data);
 }
 
 export async function importData(jsonStr: string): Promise<number> {
