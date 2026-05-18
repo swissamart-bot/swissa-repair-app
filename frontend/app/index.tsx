@@ -98,7 +98,7 @@ export default function NewEntry() {
         Alert.alert('Permission needed', 'Camera access is required to take photos.');
         return;
       }
-      const result = await ImagePicker.launchCameraAsync({ base64: true, quality: 0.3, allowsEditing: true });
+      const result = await ImagePicker.launchCameraAsync({ base64: true, quality: 0.3 });
       if (!result.canceled && result.assets[0]?.base64) {
         setPhoto(`data:image/jpeg;base64,${result.assets[0].base64}`);
       }

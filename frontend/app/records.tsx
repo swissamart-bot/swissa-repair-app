@@ -8,6 +8,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from 'expo-router';
 import * as Linking from 'expo-linking';
+import * as ImagePicker from 'expo-image-picker';
 import { getAllRecords, updateRecord, deleteRecordById } from '../src/database';
 import { C, SHOP, ITEM_TYPES, DELIVERY_MSG } from '../src/constants';
 import { RepairRecord } from '../src/types';
@@ -32,6 +33,8 @@ export default function Records() {
   const [editPhone, setEditPhone] = useState('');
   const [editItem, setEditItem] = useState('');
   const [editIssue, setEditIssue] = useState('');
+  const [editPhoto, setEditPhoto] = useState<string | null>(null);
+  const [dateSearch, setDateSearch] = useState('');
 
   useFocusEffect(useCallback(() => { loadRecords(); }, []));
 
@@ -45,12 +48,13 @@ export default function Records() {
     setTimeout(() => setToast(null), 3000);
   }
 
-  // Search includes job ID, name, phone, item
+  // Search includes job ID, name, phone, item, date
   const filtered = records.filter(r => {
     const matchFilter = filter === 'all' || r.status === filter;
     const q = search.toLowerCase();
-    const matchSearch = !q || r.name.toLowerCase().includes(q) || r.phone.includes(q) || r.item.toLowerCase().includes(q) || r.id.includes(q);
-    return matchFilter && matchSearch;
+    const matchSearch = !q || r.name.toLowerCase().includes(q) || r.phone.includes(q) || r.item.toLowerCase().includes(q) || r.id.includes(q) || r.date.toLowerCase().includes(q);
+    const matchDate = !dateSearch || r.date.includes(dateSearch);
+    return matchFilter && matchSearch && matchDate;
   });
 
   function startEdit(record: RepairRecord) {
@@ -59,6 +63,39 @@ export default function Records() {
     setEditPhone(record.phone);
     setEditItem(record.item);
     setEditIssue(record.issue);
+    setEditPhoto(record.photo);
+  }
+
+  async function editTakePhoto() {
+    try {
+      const perm = await ImagePicker.requestCameraPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert('Permission needed', 'Camera access is required.');
+        return;
+      }
+      const result = await ImagePicker.launchCameraAsync({ base64: true, quality: 0.3 });
+      if (!result.canceled && result.assets[0]?.base64) {
+        setEditPhoto(`data:image/jpeg;base64,${result.assets[0].base64}`);
+      }
+    } catch {
+      showToastMsg('Camera not available', true);
+    }
+  }
+
+  async function editPickGallery() {
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert('Permission needed', 'Gallery access is required.');
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({ base64: true, quality: 0.3 });
+      if (!result.canceled && result.assets[0]?.base64) {
+        setEditPhoto(`data:image/jpeg;base64,${result.assets[0].base64}`);
+      }
+    } catch {
+      showToastMsg('Gallery not available', true);
+    }
   }
 
   async function saveEdit() {
@@ -70,6 +107,7 @@ export default function Records() {
       phone: editPhone.trim(),
       item: editItem,
       issue: editIssue.trim(),
+      photo: editPhoto,
     };
     await updateRecord(updated);
     await loadRecords();
@@ -224,6 +262,8 @@ export default function Records() {
         <Text style={s.headerTitle}>Records</Text>
         <TextInput testID="search-input" style={s.searchInput} value={search} onChangeText={setSearch}
           placeholder="Search by name, phone, job ID..." placeholderTextColor={C.textMuted} />
+        <TextInput testID="date-search-input" style={[s.searchInput, { marginTop: 8 }]} value={dateSearch} onChangeText={setDateSearch}
+          placeholder="Search by date (e.g. 28/4/2026)" placeholderTextColor={C.textMuted} />
       </View>
 
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.filtersRow} style={s.filtersScroll}>
@@ -282,6 +322,24 @@ export default function Records() {
                 </View>
                 <Text style={s.editLabel}>ISSUE / FAULT</Text>
                 <TextInput testID="edit-issue" style={[s.editInput, { minHeight: 60 }]} value={editIssue} onChangeText={setEditIssue} multiline textAlignVertical="top" />
+                <Text style={s.editLabel}>PHOTO</Text>
+                <View style={s.editPhotoRow}>
+                  <TouchableOpacity testID="edit-camera" style={s.editPhotoBtn} onPress={editTakePhoto}>
+                    <Ionicons name="camera-outline" size={18} color={C.primary} />
+                    <Text style={s.editPhotoBtnText}>Camera</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity testID="edit-gallery" style={s.editPhotoBtn} onPress={editPickGallery}>
+                    <Ionicons name="images-outline" size={18} color={C.primary} />
+                    <Text style={s.editPhotoBtnText}>Gallery</Text>
+                  </TouchableOpacity>
+                  {editPhoto && (
+                    <TouchableOpacity testID="edit-remove-photo" style={s.editPhotoBtn} onPress={() => setEditPhoto(null)}>
+                      <Ionicons name="trash-outline" size={18} color={C.red} />
+                      <Text style={[s.editPhotoBtnText, { color: C.red }]}>Remove</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+                {editPhoto && <Image source={{ uri: editPhoto }} style={s.editPhotoPreview} />}
                 <TouchableOpacity testID="btn-save-edit" style={s.editSaveBtn} onPress={saveEdit}>
                   <Ionicons name="checkmark-circle" size={20} color={C.primaryFg} />
                   <Text style={s.editSaveBtnText}>Save Changes</Text>
@@ -406,6 +464,10 @@ const s = StyleSheet.create({
   editItemLabelActive: { color: C.primaryFg },
   editSaveBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, backgroundColor: C.primary, borderRadius: 12, paddingVertical: 16, marginTop: 20, marginBottom: 20 },
   editSaveBtnText: { fontSize: 16, fontWeight: '700', color: C.primaryFg },
+  editPhotoRow: { flexDirection: 'row', gap: 10, marginBottom: 10 },
+  editPhotoBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8, backgroundColor: C.secondary, borderWidth: 1, borderColor: C.border },
+  editPhotoBtnText: { fontSize: 13, fontWeight: '600', color: C.primary },
+  editPhotoPreview: { width: '100%', height: 150, borderRadius: 10, marginBottom: 10, backgroundColor: C.secondary },
   // Receipt Modal
   receiptOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)' },
   receiptScrollContent: { flexGrow: 1, justifyContent: 'center', padding: 20 },
