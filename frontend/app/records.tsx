@@ -10,7 +10,7 @@ import { useFocusEffect } from 'expo-router';
 import * as Linking from 'expo-linking';
 import * as ImagePicker from 'expo-image-picker';
 import { getAllRecords, updateRecord, deleteRecordById } from '../src/database';
-import { C, SHOP, ITEM_TYPES, DELIVERY_MSG } from '../src/constants';
+import { C, SHOP, ITEM_TYPES, DELIVERY_MSG, COMMUNITY_MSG } from '../src/constants';
 import { RepairRecord } from '../src/types';
 
 const FILTERS = [
@@ -153,7 +153,7 @@ export default function Records() {
 
   function sendDeliveredWA(r: RepairRecord) {
     const cleanPhone = (r.countryCode + r.phone).replace(/\D/g, '');
-    const msg = `🏪 *SWISSA — Watch & Opticals*\n\nHi ${r.name}! 👋\n\nYour ${r.item} has been successfully *DELIVERED*. ✅\n\n🔖 *Job ID: #${r.id}*\n\nThank you for choosing SWISSA! 🙏\nWe hope to serve you again!`;
+    const msg = `🏪 *SWISSA — Watch & Opticals*\n\nHi ${r.name}! 👋\n\nYour ${r.item} has been successfully *DELIVERED*. ✅\n\n🔖 *Job ID: #${r.id}*\n\nThank you for choosing SWISSA! 🙏\nWe hope to serve you again!\n\n${COMMUNITY_MSG}`;
     Linking.openURL(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`);
   }
 
@@ -166,7 +166,7 @@ export default function Records() {
 
   function shareReceiptWA(r: RepairRecord) {
     const cleanPhone = (r.countryCode + r.phone).replace(/\D/g, '');
-    const msg = `🏪 *SWISSA — Watch & Opticals*\n${SHOP.address}\n\n📋 *REPAIR RECEIPT*\n\n🔖 *Job ID: #${r.id}*\n👤 Name: ${r.name}\n📱 Phone: ${r.countryCode} ${r.phone}\n🔧 Item: ${r.item}\n❓ Issue: ${r.issue || 'N/A'}\n📅 Date In: ${r.date}\n📊 Status: ${r.status}\n\nThank you for choosing SWISSA! 🙏`;
+    const msg = `🏪 *SWISSA — Watch & Opticals*\n${SHOP.address}\n\n📋 *REPAIR RECEIPT*\n\n🔖 *Job ID: #${r.id}*\n👤 Name: ${r.name}\n📱 Phone: ${r.countryCode} ${r.phone}\n🔧 Item: ${r.item}\n❓ Issue: ${r.issue || 'N/A'}\n📅 Date In: ${r.date}\n📊 Status: ${r.status}\n\nThank you for choosing SWISSA! 🙏\n\n${COMMUNITY_MSG}`;
     Linking.openURL(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`);
   }
 
