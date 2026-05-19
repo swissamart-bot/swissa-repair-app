@@ -61,11 +61,12 @@ export const ITEM_TYPES = [
 
 
 export function generateJobId(): string {
+  return String(Math.floor(10000 + Math.random() * 90000));
+}
+
 export const DELIVERY_MSG = `*Please collect your belongings within 7 days of this message. We shall not be responsible thereafter.*
 *આ સંદેશાના 7 દિવસની અંદર આપનો સામાન લઈ જશો. ત્યાર બાદ અમે જવાબદાર રહીશું નહીં.*
 *इस संदेश के 7 दिनों के भीतर अपना सामान ले जाएँ। इसके बाद हम ज़िम्मेदार नहीं होंगे।*`;
 
 export const COMMUNITY_LINK = 'https://chat.whatsapp.com/ELfRzSHDId8LohNOxh0Hit';
 export const COMMUNITY_MSG = `🤝 Join our *Swissa Watch & Opticals* WhatsApp community for exclusive offers, updates & tips!\n👉 ${COMMUNITY_LINK}`;
-  return String(Math.floor(10000 + Math.random() * 90000));
-}
