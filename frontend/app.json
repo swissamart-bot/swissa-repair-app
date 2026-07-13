@@ -13,7 +13,8 @@
         "NSCameraUsageDescription": "Take photos of repair items",
         "NSPhotoLibraryUsageDescription": "Select item photos from gallery",
         "NSContactsUsageDescription": "Pick customer from contacts"
-      }
+      },
+      "bundleIdentifier": "com.emergent.offlinedbsync.jgwa5g"
     },
     "android": {
       "adaptiveIcon": {
