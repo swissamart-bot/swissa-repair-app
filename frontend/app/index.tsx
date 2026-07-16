@@ -16,6 +16,7 @@ export default function NewEntry() {
   const [issue, setIssue] = useState('');
   const [photo, setPhoto] = useState<string | null>(null);
   const [advanceAmount, setAdvanceAmount] = useState('');
+  const [totalAmount, setTotalAmount] = useState('');
   const [showCountryPicker, setShowCountryPicker] = useState(false);
   const [showReceipt, setShowReceipt] = useState(false);
   const [savedJob, setSavedJob] = useState<RepairJob | null>(null);
@@ -102,7 +103,9 @@ export default function NewEntry() {
       brand: '', model: '', color: '', identification: '',
       description: issue.trim(), selectedPhrases: [],
       customerComplaint: '', accessoriesReceived: '',
-      estimatedAmount: 0, finalAmount: 0, amountPaid: 0,
+      estimatedAmount: selectedItems.length === 1 ? (parseFloat(totalAmount) || 0) : 0,
+      finalAmount: selectedItems.length === 1 ? (parseFloat(totalAmount) || 0) : 0,
+      amountPaid: 0,
       technicianNotes: '',
       photos: photo && idx === 0 ? [photo] : [],
       status: 'Received', expectedDeliveryDate: '', warrantyDetails: '',
@@ -114,7 +117,7 @@ export default function NewEntry() {
       setSavedJob({ ...job, items });
       setShowReceipt(true);
       showToastMsg('Repair job saved!');
-      setCustomerName(''); setMobileNumber(''); setSelectedItems([]); setIssue(''); setPhoto(null); setAdvanceAmount('');
+      setCustomerName(''); setMobileNumber(''); setSelectedItems([]); setIssue(''); setPhoto(null); setAdvanceAmount(''); setTotalAmount('');
     } catch (e: any) {
       showToastMsg('Save failed: ' + (e?.message || ''), true);
     } finally { setSaving(false); }
@@ -125,7 +128,11 @@ export default function NewEntry() {
     const j = savedJob;
     const cleanPhone = (j.countryCode + j.mobileNumber).replace(/\D/g, '');
     const itemsList = j.items.map((i, idx) => `${idx + 1}. ${ITEM_ICONS[i.itemType] || ''} ${i.itemType}${i.description ? ' – ' + i.description : ''}`).join('\n');
-    const msg = `🏪 *SWISSA — Watch & Opticals*\n${SHOP.address}\n\n📋 *REPAIR RECEIPT*\n\n🔖 *Job No: #${j.jobNumber}*\n👤 Customer: ${j.customerName}\n📱 Phone: ${j.countryCode} ${j.mobileNumber}\n📅 Date: ${j.receivedDate}\n\n*Items Received:*\n${itemsList}\n\n${j.advanceAmount > 0 ? `💵 Advance: ₹${j.advanceAmount}\n` : ''}Please save this number for updates.\nThank you for choosing SWISSA! 🙏\n\n${COMMUNITY_MSG}`;
+    const total = parseFloat(totalAmount) || j.items.reduce((s, i) => s + (i.estimatedAmount || 0), 0);
+    const advance = j.advanceAmount || 0;
+    const balance = total - advance;
+    const amountText = total > 0 ? `\n\n💰 Total Amount: ₹${total}\n💵 Advance: ₹${advance}\n📊 Balance: ₹${balance}` : (advance > 0 ? `\n\n💵 Advance: ₹${advance}` : '');
+    const msg = `🏪 *SWISSA — Watch & Opticals*\n${SHOP.address}\n\n📋 *REPAIR RECEIPT*\n\n🔖 *Job No: #${j.jobNumber}*\n👤 Customer: ${j.customerName}\n📱 Phone: ${j.countryCode} ${j.mobileNumber}\n📅 Date: ${j.receivedDate}\n\n*Items Received:*\n${itemsList}${amountText}\n\nPlease save this number for updates.\nThank you for choosing SWISSA! 🙏\n\n${COMMUNITY_MSG}`;
     Linking.openURL(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`);
   }
 
@@ -213,9 +220,25 @@ export default function NewEntry() {
           </View>
 
           <View style={s.field}>
+            <Text style={s.label}>TOTAL AMOUNT (₹) — optional</Text>
+            <TextInput testID="input-amount" style={s.input} value={totalAmount} onChangeText={setTotalAmount} placeholder="0" placeholderTextColor={C.textMuted} keyboardType="numeric" />
+          </View>
+
+          <View style={s.field}>
             <Text style={s.label}>ADVANCE PAYMENT (₹) — optional</Text>
             <TextInput testID="input-advance" style={s.input} value={advanceAmount} onChangeText={setAdvanceAmount} placeholder="0" placeholderTextColor={C.textMuted} keyboardType="numeric" />
           </View>
+
+          {(parseFloat(totalAmount) > 0 || parseFloat(advanceAmount) > 0) && (
+            <View style={s.balanceCard}>
+              <View style={s.balanceRow}><Text style={s.balanceLabel}>Total Amount</Text><Text style={s.balanceValue}>₹{parseFloat(totalAmount) || 0}</Text></View>
+              <View style={s.balanceRow}><Text style={s.balanceLabel}>Advance Paid</Text><Text style={[s.balanceValue, { color: C.green800 }]}>- ₹{parseFloat(advanceAmount) || 0}</Text></View>
+              <View style={[s.balanceRow, { borderTopWidth: 1, borderTopColor: C.border, paddingTop: 10, marginTop: 4 }]}>
+                <Text style={[s.balanceLabel, { fontWeight: '800', fontSize: 16 }]}>Balance</Text>
+                <Text style={[s.balanceValue, { fontWeight: '800', fontSize: 16, color: (parseFloat(totalAmount) || 0) - (parseFloat(advanceAmount) || 0) > 0 ? C.red : C.green800 }]}>₹{(parseFloat(totalAmount) || 0) - (parseFloat(advanceAmount) || 0)}</Text>
+              </View>
+            </View>
+          )}
 
           <TouchableOpacity testID="btn-save" style={s.saveBtn} onPress={handleSave} disabled={saving}>
             {saving ? <ActivityIndicator color={C.primaryFg} /> : (
@@ -266,10 +289,21 @@ export default function NewEntry() {
                     {item.description ? <Text style={s.receiptItemDesc}>Issue: {item.description}</Text> : null}
                   </View>
                 ))}
-                {savedJob.advanceAmount > 0 && <>
+                {savedJob.advanceAmount > 0 || parseFloat(totalAmount) > 0 ? <>
                   <View style={s.divider} />
-                  <Text style={s.receiptAdvance}>Advance Paid: ₹{savedJob.advanceAmount}</Text>
-                </>}
+                  <View style={s.balanceCard}>
+                    {(parseFloat(totalAmount) > 0 || savedJob.items.some(i => i.estimatedAmount > 0)) && (
+                      <View style={s.balanceRow}><Text style={s.balanceLabel}>Total Amount</Text><Text style={s.balanceValue}>₹{parseFloat(totalAmount) || savedJob.items.reduce((sum, i) => sum + (i.estimatedAmount || 0), 0)}</Text></View>
+                    )}
+                    {savedJob.advanceAmount > 0 && (
+                      <View style={s.balanceRow}><Text style={s.balanceLabel}>Advance Paid</Text><Text style={[s.balanceValue, { color: C.green800 }]}>₹{savedJob.advanceAmount}</Text></View>
+                    )}
+                    <View style={[s.balanceRow, { borderTopWidth: 1, borderTopColor: C.border, paddingTop: 8, marginTop: 4 }]}>
+                      <Text style={[s.balanceLabel, { fontWeight: '800' }]}>Balance</Text>
+                      <Text style={[s.balanceValue, { fontWeight: '800', color: C.red }]}>₹{(parseFloat(totalAmount) || savedJob.items.reduce((sum, i) => sum + (i.estimatedAmount || 0), 0)) - savedJob.advanceAmount}</Text>
+                    </View>
+                  </View>
+                </> : null}
               </>}
               <View style={s.divider} />
               <TouchableOpacity testID="btn-receipt-wa" style={s.waBtn} onPress={shareReceiptWA}>
@@ -339,6 +373,10 @@ const s = StyleSheet.create({
   receiptItemTitle: { fontSize: 15, fontWeight: '700', color: C.text },
   receiptItemDesc: { fontSize: 13, color: C.textMuted, marginTop: 4 },
   receiptAdvance: { fontSize: 15, fontWeight: '700', color: C.green800, textAlign: 'center' },
+  balanceCard: { backgroundColor: C.bg, borderRadius: 10, padding: 14, borderWidth: 1, borderColor: C.border, marginBottom: 8 },
+  balanceRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 6 },
+  balanceLabel: { fontSize: 14, color: C.textMuted, fontWeight: '600' },
+  balanceValue: { fontSize: 14, color: C.text, fontWeight: '700' },
   waBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, backgroundColor: C.whatsapp, borderRadius: 12, paddingVertical: 14, marginTop: 8 },
   waBtnText: { fontSize: 15, fontWeight: '700', color: '#FFF' },
   toast: { position: 'absolute', bottom: 100, left: 20, right: 20, backgroundColor: '#166534', borderRadius: 10, padding: 14, alignItems: 'center' },
