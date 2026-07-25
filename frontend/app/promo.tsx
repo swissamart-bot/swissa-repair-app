@@ -9,16 +9,22 @@ import { useFocusEffect } from 'expo-router';
 import * as Linking from 'expo-linking';
 import * as Clipboard from 'expo-clipboard';
 import * as ImagePicker from 'expo-image-picker';
-import { getAllRecords } from '../src/database';
+import { getAllJobs } from '../src/database';
 import { C, SHOP } from '../src/constants';
-import { RepairRecord } from '../src/types';
+
+/** Promo broadcast customer row (legacy RepairRecord shape). */
+type PromoCustomer = {
+  countryCode: string;
+  phone: string;
+  name: string;
+};
 
 const DEFAULT_PROMO = `🏪 *SWISSA — Watch & Opticals*\n\n🎉 Special Offer! 🎉\n\nVisit us for the best deals on watch repairs, spectacle fitting, and goggle services!\n\n📍 ${SHOP.address}\n\nCall us today! 🙏`;
 
 export default function Promo() {
   const [message, setMessage] = useState(DEFAULT_PROMO);
   const [promoPhoto, setPromoPhoto] = useState<string | null>(null);
-  const [customers, setCustomers] = useState<RepairRecord[]>([]);
+  const [customers, setCustomers] = useState<PromoCustomer[]>([]);
   const [showProgress, setShowProgress] = useState(false);
   const [uniqueNumbers, setUniqueNumbers] = useState<string[]>([]);
   const [toast, setToast] = useState<{ msg: string; err: boolean } | null>(null);
@@ -26,8 +32,14 @@ export default function Promo() {
   useFocusEffect(useCallback(() => { loadCustomers(); }, []));
 
   async function loadCustomers() {
-    const data = await getAllRecords();
-    setCustomers(data);
+    const jobs = await getAllJobs();
+    setCustomers(
+      jobs.map(j => ({
+        name: j.customerName,
+        phone: j.mobileNumber,
+        countryCode: j.countryCode || '+91',
+      }))
+    );
   }
 
   function showToastMsg(msg: string, err = false) {

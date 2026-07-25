@@ -1,22 +1,42 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { View, Text, TextInput, TouchableOpacity, ScrollView, StyleSheet, Alert, Modal, Image, KeyboardAvoidingView, Platform, FlatList, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import * as Linking from 'expo-linking';
-import { createJob } from '../src/database';
-import { C, COUNTRY_CODES, SHOP, ITEM_TYPES, ITEM_ICONS, generateJobNumber, COMMUNITY_MSG } from '../src/constants';
-import { RepairJob, RepairItem, getJobTotals } from '../src/types';
+import { createJob, updateItem } from '../src/database';
+import { C, COUNTRY_CODES, SHOP, ITEM_TYPES, ITEM_ICONS, generateJobNumber, getStatusColor, formatWhatsAppCustomerHeader, formatWhatsAppRepairReceiptBody } from '../src/constants';
+import { RepairJob, RepairItem, getJobTotals, formatINR, ITEM_STATUSES, getItemAmount } from '../src/types';
+import DiagnosisSection from '../src/components/DiagnosisSection';
+import { createPhotoFromCapture, uploadRepairPhoto, normalizePhotos } from '../src/photos';
+import { scheduleJobSync } from '../src/sync';
+
+function parseMoneyInput(raw: string): number {
+  const n = parseFloat(String(raw).replace(/,/g, '').trim());
+  if (!Number.isFinite(n)) return 0;
+  return n;
+}
+
+/** Allow typing decimals; strip invalid chars but keep a single dot. */
+function sanitizeMoneyTyping(raw: string): string {
+  let t = String(raw || '').replace(/[^0-9.]/g, '');
+  const firstDot = t.indexOf('.');
+  if (firstDot !== -1) {
+    t = t.slice(0, firstDot + 1) + t.slice(firstDot + 1).replace(/\./g, '');
+  }
+  return t;
+}
 
 export default function NewEntry() {
   const [customerName, setCustomerName] = useState('');
   const [mobileNumber, setMobileNumber] = useState('');
   const [countryCode, setCountryCode] = useState('+91');
   const [selectedItems, setSelectedItems] = useState<string[]>([]);
-  const [issue, setIssue] = useState('');
+  const [itemStatuses, setItemStatuses] = useState<string[]>([]);
+  const [itemDiagnoses, setItemDiagnoses] = useState<string[]>([]);
+  const [itemAmounts, setItemAmounts] = useState<string[]>([]);
   const [photo, setPhoto] = useState<string | null>(null);
   const [advanceAmount, setAdvanceAmount] = useState('');
-  const [totalAmount, setTotalAmount] = useState('');
   const [showCountryPicker, setShowCountryPicker] = useState(false);
   const [showReceipt, setShowReceipt] = useState(false);
   const [savedJob, setSavedJob] = useState<RepairJob | null>(null);
@@ -25,16 +45,74 @@ export default function NewEntry() {
   const [contactsList, setContactsList] = useState<any[]>([]);
   const [showContactPicker, setShowContactPicker] = useState(false);
   const [contactSearch, setContactSearch] = useState('');
+  const [statusPickerIndex, setStatusPickerIndex] = useState<number | null>(null);
 
-  const [jobId] = useState(() => `job_${Date.now()}`);
-  const [jobNumber] = useState(() => generateJobNumber());
+  const [jobId, setJobId] = useState(() => `job_${Date.now()}`);
+  const [jobNumber, setJobNumber] = useState(() => generateJobNumber());
+
+  /** Live Total = sum of item amounts; Balance = Total − Advance */
+  const livePayments = useMemo(() => {
+    const total = itemAmounts.reduce((s, a) => s + Math.max(0, parseMoneyInput(a)), 0);
+    const advance = Math.max(0, parseMoneyInput(advanceAmount));
+    const balance = Math.max(0, total - advance);
+    return { total, advance, balance };
+  }, [itemAmounts, advanceAmount]);
+
+  const savedPayments = useMemo(() => {
+    if (!savedJob) return null;
+    return getJobTotals(savedJob.items, savedJob.advanceAmount);
+  }, [savedJob]);
 
   function showToastMsg(msg: string, err = false) {
     setToast({ msg, err }); setTimeout(() => setToast(null), 3000);
   }
 
+  function onChangeAdvance(text: string) {
+    setAdvanceAmount(sanitizeMoneyTyping(text));
+  }
+
   function toggleItem(type: string) {
-    setSelectedItems(prev => prev.includes(type) ? prev.filter(t => t !== type) : [...prev, type]);
+    setSelectedItems(prev => {
+      if (prev.includes(type)) {
+        const removeIdx = prev.indexOf(type);
+        setItemStatuses(statuses => statuses.filter((_, i) => i !== removeIdx));
+        setItemDiagnoses(diags => diags.filter((_, i) => i !== removeIdx));
+        setItemAmounts(amts => amts.filter((_, i) => i !== removeIdx));
+        return prev.filter(t => t !== type);
+      }
+      setItemStatuses(statuses => [...statuses, 'Received']);
+      setItemDiagnoses(diags => [...diags, '']);
+      setItemAmounts(amts => [...amts, '']);
+      return [...prev, type];
+    });
+  }
+
+  function setItemDiagnosisAt(index: number, text: string) {
+    setItemDiagnoses(prev => {
+      const next = [...prev];
+      while (next.length <= index) next.push('');
+      next[index] = text;
+      return next;
+    });
+  }
+
+  function setItemAmountAt(index: number, text: string) {
+    setItemAmounts(prev => {
+      const next = [...prev];
+      while (next.length <= index) next.push('');
+      next[index] = sanitizeMoneyTyping(text);
+      return next;
+    });
+  }
+
+  function setItemStatusAt(index: number, status: string) {
+    setItemStatuses(prev => {
+      const next = [...prev];
+      while (next.length <= index) next.push('Received');
+      next[index] = status;
+      return next;
+    });
+    setStatusPickerIndex(null);
   }
 
   async function pickContact() {
@@ -64,9 +142,9 @@ export default function NewEntry() {
     try {
       const perm = await ImagePicker.requestCameraPermissionsAsync();
       if (!perm.granted) { Alert.alert('Permission needed', 'Camera access required.'); return; }
-      const result = await ImagePicker.launchCameraAsync({ base64: true, quality: 0.3 });
-      if (!result.canceled && result.assets[0]?.base64) {
-        setPhoto(`data:image/jpeg;base64,${result.assets[0].base64}`);
+      const result = await ImagePicker.launchCameraAsync({ quality: 0.7 });
+      if (!result.canceled && result.assets[0]?.uri) {
+        setPhoto(result.assets[0].uri);
       }
     } catch { showToastMsg('Camera not available', true); }
   }
@@ -75,9 +153,9 @@ export default function NewEntry() {
     try {
       const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!perm.granted) { Alert.alert('Permission needed', 'Gallery access required.'); return; }
-      const result = await ImagePicker.launchImageLibraryAsync({ base64: true, quality: 0.3 });
-      if (!result.canceled && result.assets[0]?.base64) {
-        setPhoto(`data:image/jpeg;base64,${result.assets[0].base64}`);
+      const result = await ImagePicker.launchImageLibraryAsync({ quality: 0.7 });
+      if (!result.canceled && result.assets[0]?.uri) {
+        setPhoto(result.assets[0].uri);
       }
     } catch { showToastMsg('Gallery not available', true); }
   }
@@ -87,52 +165,108 @@ export default function NewEntry() {
     if (!mobileNumber.trim()) { showToastMsg('Enter mobile number', true); return; }
     if (selectedItems.length === 0) { showToastMsg('Select at least one item type', true); return; }
 
+    const rawTotal = livePayments.total;
+    const rawAdvance = parseMoneyInput(advanceAmount);
+
+    if (rawTotal < 0) { showToastMsg('Total cannot be negative', true); return; }
+    if (rawAdvance < 0) { showToastMsg('Advance cannot be negative', true); return; }
+    if (rawAdvance > rawTotal && rawTotal > 0) {
+      showToastMsg('Advance cannot exceed Total Amount', true);
+      return;
+    }
+    if (rawAdvance > 0 && rawTotal === 0) {
+      showToastMsg('Enter item amounts before Advance, or set Advance to 0', true);
+      return;
+    }
+
+    const advance = Math.max(0, rawAdvance);
+
     setSaving(true);
     const now = new Date().toISOString();
-    const advance = parseFloat(advanceAmount) || 0;
 
     const job: Omit<RepairJob, 'items'> = {
       id: jobId, jobNumber, customerName: customerName.trim(), mobileNumber: mobileNumber.trim(),
       countryCode, receivedDate: new Date().toLocaleString(), advanceAmount: advance,
-      overallNotes: '', googleReviewSent: false, createdAt: now, updatedAt: now,
+      overallNotes: '', googleReviewSent: false, cloudSyncEnabled: true,
+      createdAt: now, updatedAt: now,
     };
 
-    const items: RepairItem[] = selectedItems.map((type, idx) => ({
-      id: `item_${Date.now()}_${idx}`,
-      jobId, itemNumber: idx + 1, itemType: type,
-      brand: '', model: '', color: '', identification: '',
-      description: issue.trim(), selectedPhrases: [],
-      customerComplaint: '', accessoriesReceived: '',
-      estimatedAmount: selectedItems.length === 1 ? (parseFloat(totalAmount) || 0) : 0,
-      finalAmount: selectedItems.length === 1 ? (parseFloat(totalAmount) || 0) : 0,
-      amountPaid: 0,
-      technicianNotes: '',
-      photos: photo && idx === 0 ? [photo] : [],
-      status: 'Received', expectedDeliveryDate: '', warrantyDetails: '',
-      delivered: false, deliveredDate: '', createdAt: now, updatedAt: now,
-    }));
+    const items: RepairItem[] = selectedItems.map((type, idx) => {
+      const status = itemStatuses[idx] || 'Received';
+      const isDelivered = status === 'Delivered';
+      const amt = Math.max(0, parseMoneyInput(itemAmounts[idx] || ''));
+      return {
+        id: `item_${Date.now()}_${idx}`,
+        jobId, itemNumber: idx + 1, itemType: type,
+        brand: '', model: '', color: '', identification: '',
+        description: '', selectedPhrases: [],
+        customerComplaint: '', accessoriesReceived: '',
+        estimatedAmount: amt,
+        finalAmount: amt,
+        amountPaid: 0,
+        advanceApplied: 0,
+        refundAmount: 0,
+        nonRefundableCharges: 0,
+        returnedDate: '',
+        technicianNotes: (itemDiagnoses[idx] || '').trim(),
+        photos: photo && idx === 0 ? [createPhotoFromCapture(photo)] : [],
+        status,
+        expectedDeliveryDate: '', warrantyDetails: '',
+        delivered: isDelivered,
+        deliveredDate: isDelivered ? new Date().toLocaleString() : '',
+        createdAt: now, updatedAt: now,
+      };
+    });
+
+    // Keep job advance at job level — do not auto-assign to specific items
 
     try {
       await createJob(job, items);
-      setSavedJob({ ...job, items });
+      // Upload photo to Firebase Storage (non-blocking for local save success)
+      if (photo && items[0]) {
+        try {
+          const uploaded = await uploadRepairPhoto(
+            normalizePhotos(items[0].photos)[0],
+            job.id,
+            items[0].id,
+          );
+          items[0] = { ...items[0], photos: [uploaded], updatedAt: new Date().toISOString() };
+          await updateItem(items[0]);
+          scheduleJobSync(job.id);
+        } catch (uploadErr) {
+          console.warn('Photo cloud upload deferred:', uploadErr);
+        }
+      }
+      const saved: RepairJob = { ...job, items };
+      setSavedJob(saved);
       setShowReceipt(true);
       showToastMsg('Repair job saved!');
-      setCustomerName(''); setMobileNumber(''); setSelectedItems([]); setIssue(''); setPhoto(null); setAdvanceAmount(''); setTotalAmount('');
+      setCustomerName(''); setMobileNumber(''); setSelectedItems([]); setItemStatuses([]); setItemDiagnoses([]); setItemAmounts([]); setPhoto(null);
+      setAdvanceAmount('');
+      setJobId(`job_${Date.now()}`);
+      setJobNumber(generateJobNumber());
     } catch (e: any) {
       showToastMsg('Save failed: ' + (e?.message || ''), true);
     } finally { setSaving(false); }
   }
 
+  /** WhatsApp retail receipt — readable item bullets + payment summary */
   function shareReceiptWA() {
     if (!savedJob) return;
     const j = savedJob;
+    const pay = getJobTotals(j.items, j.advanceAmount);
     const cleanPhone = (j.countryCode + j.mobileNumber).replace(/\D/g, '');
-    const itemsList = j.items.map((i, idx) => `${idx + 1}. ${ITEM_ICONS[i.itemType] || ''} ${i.itemType}${i.description ? ' – ' + i.description : ''}`).join('\n');
-    const total = parseFloat(totalAmount) || j.items.reduce((s, i) => s + (i.estimatedAmount || 0), 0);
-    const advance = j.advanceAmount || 0;
-    const balance = total - advance;
-    const amountText = total > 0 ? `\n\n💰 Total Amount: ₹${total}\n💵 Advance: ₹${advance}\n📊 Balance: ₹${balance}` : (advance > 0 ? `\n\n💵 Advance: ₹${advance}` : '');
-    const msg = `🏪 *SWISSA — Watch & Opticals*\n${SHOP.address}\n\n📋 *REPAIR RECEIPT*\n\n🔖 *Job No: #${j.jobNumber}*\n👤 Customer: ${j.customerName}\n📱 Phone: ${j.countryCode} ${j.mobileNumber}\n📅 Date: ${j.receivedDate}\n\n*Items Received:*\n${itemsList}${amountText}\n\nPlease save this number for updates.\nThank you for choosing SWISSA! 🙏\n\n${COMMUNITY_MSG}`;
+    const msg =
+`${formatWhatsAppCustomerHeader(j.customerName, j.jobNumber)}
+
+${formatWhatsAppRepairReceiptBody({
+  receivedDate: j.receivedDate,
+  items: j.items,
+  total: pay.displayTotal,
+  paid: pay.totalPaid,
+  balance: pay.balance,
+})}`;
+
     Linking.openURL(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`);
   }
 
@@ -192,10 +326,47 @@ export default function NewEntry() {
             )}
           </View>
 
-          <View style={s.field}>
-            <Text style={s.label}>ISSUE / FAULT</Text>
-            <TextInput testID="input-issue" style={[s.input, s.textarea]} value={issue} onChangeText={setIssue} placeholder="Describe the problem..." placeholderTextColor={C.textMuted} multiline numberOfLines={3} textAlignVertical="top" />
-          </View>
+          {selectedItems.length > 0 && (
+            <View style={s.field}>
+              <Text style={s.label}>ITEM STATUS & DIAGNOSIS (per item)</Text>
+              {selectedItems.map((type, idx) => {
+                const stStatus = itemStatuses[idx] || 'Received';
+                const sc = getStatusColor(stStatus);
+                return (
+                  <View key={`${type}-${idx}`} style={s.itemCard}>
+                    <Text style={s.itemCardTitle}>Item {idx + 1}: {ITEM_ICONS[type]} {type}</Text>
+                    <TouchableOpacity
+                      testID={`item-status-${idx}`}
+                      style={[s.statusSelect, { backgroundColor: sc.bg }]}
+                      onPress={() => setStatusPickerIndex(idx)}
+                    >
+                      <Text style={[s.statusSelectText, { color: sc.text }]}>{stStatus}</Text>
+                      <Ionicons name="chevron-down" size={16} color={sc.text} />
+                    </TouchableOpacity>
+                    <View style={{ marginTop: 12 }}>
+                      <DiagnosisSection
+                        itemType={type}
+                        allowInsert
+                        value={itemDiagnoses[idx] || ''}
+                        onChange={(text) => setItemDiagnosisAt(idx, text)}
+                        testID={`diagnosis-section-create-${idx}`}
+                      />
+                    </View>
+                    <Text style={[s.label, { marginTop: 12, marginBottom: 6 }]}>AMOUNT (₹)</Text>
+                    <TextInput
+                      testID={`item-amount-${idx}`}
+                      style={s.input}
+                      value={itemAmounts[idx] || ''}
+                      onChangeText={(t) => setItemAmountAt(idx, t)}
+                      placeholder="0"
+                      placeholderTextColor={C.textMuted}
+                      keyboardType="decimal-pad"
+                    />
+                  </View>
+                );
+              })}
+            </View>
+          )}
 
           <View style={s.field}>
             <Text style={s.label}>PHOTO OF ITEM</Text>
@@ -220,23 +391,28 @@ export default function NewEntry() {
           </View>
 
           <View style={s.field}>
-            <Text style={s.label}>TOTAL AMOUNT (₹) — optional</Text>
-            <TextInput testID="input-amount" style={s.input} value={totalAmount} onChangeText={setTotalAmount} placeholder="0" placeholderTextColor={C.textMuted} keyboardType="numeric" />
-          </View>
-
-          <View style={s.field}>
             <Text style={s.label}>ADVANCE PAYMENT (₹) — optional</Text>
-            <TextInput testID="input-advance" style={s.input} value={advanceAmount} onChangeText={setAdvanceAmount} placeholder="0" placeholderTextColor={C.textMuted} keyboardType="numeric" />
+            <TextInput testID="input-advance" style={s.input} value={advanceAmount} onChangeText={onChangeAdvance} placeholder="0" placeholderTextColor={C.textMuted} keyboardType="decimal-pad" />
           </View>
 
-          {(parseFloat(totalAmount) > 0 || parseFloat(advanceAmount) > 0) && (
+          {selectedItems.length > 0 && (
+            <View style={s.totalHighlight}>
+              <Text style={s.totalHighlightLabel}>TOTAL AMOUNT</Text>
+              <Text style={s.totalHighlightValue}>{formatINR(livePayments.total)}</Text>
+            </View>
+          )}
+
+          {(livePayments.total > 0 || livePayments.advance > 0 || advanceAmount !== '') && (
             <View style={s.balanceCard}>
-              <View style={s.balanceRow}><Text style={s.balanceLabel}>Total Amount</Text><Text style={s.balanceValue}>₹{parseFloat(totalAmount) || 0}</Text></View>
-              <View style={s.balanceRow}><Text style={s.balanceLabel}>Advance Paid</Text><Text style={[s.balanceValue, { color: C.green800 }]}>- ₹{parseFloat(advanceAmount) || 0}</Text></View>
+              <View style={s.balanceRow}><Text style={s.balanceLabel}>Total Amount</Text><Text style={s.balanceValue}>{formatINR(livePayments.total)}</Text></View>
+              <View style={s.balanceRow}><Text style={s.balanceLabel}>Advance Paid</Text><Text style={[s.balanceValue, { color: C.green800 }]}>- {formatINR(livePayments.advance)}</Text></View>
               <View style={[s.balanceRow, { borderTopWidth: 1, borderTopColor: C.border, paddingTop: 10, marginTop: 4 }]}>
                 <Text style={[s.balanceLabel, { fontWeight: '800', fontSize: 16 }]}>Balance</Text>
-                <Text style={[s.balanceValue, { fontWeight: '800', fontSize: 16, color: (parseFloat(totalAmount) || 0) - (parseFloat(advanceAmount) || 0) > 0 ? C.red : C.green800 }]}>₹{(parseFloat(totalAmount) || 0) - (parseFloat(advanceAmount) || 0)}</Text>
+                <Text style={[s.balanceValue, { fontWeight: '800', fontSize: 16, color: livePayments.balance > 0 ? C.red : C.green800 }]}>{formatINR(livePayments.balance)}</Text>
               </View>
+              {livePayments.advance > livePayments.total && livePayments.advance > 0 ? (
+                <Text style={{ fontSize: 12, color: C.red, marginTop: 8, fontWeight: '600' }}>Advance cannot exceed Total Amount</Text>
+              ) : null}
             </View>
           )}
 
@@ -270,6 +446,36 @@ export default function NewEntry() {
           </View></View>
         </Modal>
 
+        {/* Item Status Picker */}
+        <Modal visible={statusPickerIndex !== null} transparent animationType="slide">
+          <View style={s.modalOverlay}><View style={s.modalBox}>
+            <View style={s.modalHeader}>
+              <Text style={s.modalTitle}>
+                Item {(statusPickerIndex ?? 0) + 1} Status
+              </Text>
+              <TouchableOpacity onPress={() => setStatusPickerIndex(null)}>
+                <Ionicons name="close" size={24} color={C.primary} />
+              </TouchableOpacity>
+            </View>
+            <FlatList
+              data={[...ITEM_STATUSES]}
+              keyExtractor={st => st}
+              renderItem={({ item: st }) => {
+                const sc = getStatusColor(st);
+                const active = (itemStatuses[statusPickerIndex ?? 0] || 'Received') === st;
+                return (
+                  <TouchableOpacity
+                    style={[s.modalItem, active && { backgroundColor: sc.bg }]}
+                    onPress={() => statusPickerIndex !== null && setItemStatusAt(statusPickerIndex, st)}
+                  >
+                    <Text style={[s.modalItemText, active && { fontWeight: '800', color: sc.text }]}>{st}</Text>
+                  </TouchableOpacity>
+                );
+              }}
+            />
+          </View></View>
+        </Modal>
+
         {/* Receipt Modal */}
         <Modal visible={showReceipt} transparent animationType="fade">
           <View style={s.receiptOverlay}><ScrollView contentContainerStyle={s.receiptScroll}>
@@ -285,24 +491,27 @@ export default function NewEntry() {
                 <View style={s.divider} />
                 {savedJob.items.map((item, idx) => (
                   <View key={item.id} style={s.receiptItem}>
-                    <Text style={s.receiptItemTitle}>{idx + 1}. {ITEM_ICONS[item.itemType]} {item.itemType}</Text>
-                    {item.description ? <Text style={s.receiptItemDesc}>Issue: {item.description}</Text> : null}
+                    <Text style={s.receiptItemTitle}>Item {idx + 1}. {ITEM_ICONS[item.itemType]} {item.itemType}</Text>
+                    {item.technicianNotes ? <Text style={s.receiptItemDesc}>Technician Diagnosis: {item.technicianNotes}</Text> : null}
+                    {item.description ? <Text style={s.receiptItemDesc}>Service Performed: {item.description}</Text> : null}
+                    <Text style={s.receiptItemDesc}>Amount: {formatINR(getItemAmount(item))}</Text>
                   </View>
                 ))}
-                {savedJob.advanceAmount > 0 || parseFloat(totalAmount) > 0 ? <>
+                {savedPayments ? <>
                   <View style={s.divider} />
+                  <View style={s.totalHighlight}>
+                    <Text style={s.totalHighlightLabel}>TOTAL AMOUNT</Text>
+                    <Text style={s.totalHighlightValue}>{formatINR(savedPayments.displayTotal)}</Text>
+                  </View>
+                  {(savedPayments.displayTotal > 0 || savedPayments.advance > 0) ? (
                   <View style={s.balanceCard}>
-                    {(parseFloat(totalAmount) > 0 || savedJob.items.some(i => i.estimatedAmount > 0)) && (
-                      <View style={s.balanceRow}><Text style={s.balanceLabel}>Total Amount</Text><Text style={s.balanceValue}>₹{parseFloat(totalAmount) || savedJob.items.reduce((sum, i) => sum + (i.estimatedAmount || 0), 0)}</Text></View>
-                    )}
-                    {savedJob.advanceAmount > 0 && (
-                      <View style={s.balanceRow}><Text style={s.balanceLabel}>Advance Paid</Text><Text style={[s.balanceValue, { color: C.green800 }]}>₹{savedJob.advanceAmount}</Text></View>
-                    )}
-                    <View style={[s.balanceRow, { borderTopWidth: 1, borderTopColor: C.border, paddingTop: 8, marginTop: 4 }]}>
-                      <Text style={[s.balanceLabel, { fontWeight: '800' }]}>Balance</Text>
-                      <Text style={[s.balanceValue, { fontWeight: '800', color: C.red }]}>₹{(parseFloat(totalAmount) || savedJob.items.reduce((sum, i) => sum + (i.estimatedAmount || 0), 0)) - savedJob.advanceAmount}</Text>
+                    <View style={s.balanceRow}><Text style={s.balanceLabel}>Advance Paid</Text><Text style={[s.balanceValue, { color: C.green800 }]}>{formatINR(savedPayments.advance)}</Text></View>
+                    <View style={s.balanceRow}>
+                      <Text style={[s.balanceLabel, { fontWeight: '800' }]}>Balance Amount</Text>
+                      <Text style={[s.balanceValue, { fontWeight: '800', color: savedPayments.balance > 0 ? C.red : C.green800 }]}>{formatINR(savedPayments.balance)}</Text>
                     </View>
                   </View>
+                  ) : null}
                 </> : null}
               </>}
               <View style={s.divider} />
@@ -343,6 +552,22 @@ const s = StyleSheet.create({
   itemLabelActive: { color: C.primaryFg },
   itemCheck: { position: 'absolute', top: 4, right: 4, backgroundColor: C.green800, borderRadius: 10, width: 20, height: 20, alignItems: 'center', justifyContent: 'center' },
   itemSummary: { fontSize: 13, color: C.green800, fontWeight: '600', marginTop: 10 },
+  itemCard: {
+    backgroundColor: C.surface, borderWidth: 1, borderColor: C.border, borderRadius: 10,
+    padding: 12, marginBottom: 8,
+  },
+  itemCardTitle: { fontSize: 14, fontWeight: '700', color: C.text, marginBottom: 8 },
+  totalHighlight: {
+    backgroundColor: C.primary, borderRadius: 12, paddingVertical: 16, paddingHorizontal: 18,
+    marginBottom: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+  },
+  totalHighlightLabel: { fontSize: 14, fontWeight: '800', color: C.primaryFg, letterSpacing: 1 },
+  totalHighlightValue: { fontSize: 22, fontWeight: '900', color: C.primaryFg },
+  statusSelect: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 12, paddingVertical: 10, borderRadius: 8,
+  },
+  statusSelectText: { fontSize: 13, fontWeight: '700' },
   photoRow: { flexDirection: 'row', gap: 12 },
   photoBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: C.surface, borderWidth: 1, borderColor: C.border, borderRadius: 10, paddingVertical: 14 },
   photoBtnText: { fontSize: 14, fontWeight: '600', color: C.primary },

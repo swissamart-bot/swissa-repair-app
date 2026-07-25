@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "287779954563",
+    "project_id": "swissa-repair",
+    "storage_bucket": "swissa-repair.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:287779954563:android:eebad28a05e50cff5da0b6",
+        "android_client_info": {
+          "package_name": "com.swissamartbot.swissa"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBJkkszqaLCMVDnpmS_XpUPgg2z1gYWAP0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
