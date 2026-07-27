@@ -1,0 +1,12 @@
+node_modules
+.expo
+.metro-cache
+frontend/.metro-cache
+frontend/node_modules
+dist
+web-build
+android
+ios
+.git
+*.jks
+.env*.local

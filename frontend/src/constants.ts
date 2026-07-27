@@ -56,8 +56,56 @@ export const DEFAULT_PHRASES: Record<string, string[]> = {
   ],
 };
 
+/** Visible Job ID prefix for SWISSA REPAIR PRO (stored + displayed everywhere). */
+export const JOB_NUMBER_PREFIX = 'M';
+
+/**
+ * New jobs: M + 5 random digits (e.g. M48372).
+ * Legacy jobs keep their existing numbers unchanged.
+ */
 export function generateJobNumber(): string {
-  return String(Math.floor(10000 + Math.random() * 90000));
+  const digits = String(Math.floor(10000 + Math.random() * 90000));
+  return `${JOB_NUMBER_PREFIX}${digits}`;
+}
+
+/** True when value looks like a Pro Job ID (M + exactly 5 digits). */
+export function isProJobNumber(value: string | null | undefined): boolean {
+  return /^M\d{5}$/i.test(String(value || '').trim());
+}
+
+/**
+ * Expand a search query so "48372" and "M48372" both find the same job.
+ * Five digits alone → also try with M prefix.
+ */
+export function expandJobNumberSearchTerms(raw: string): string[] {
+  const q = String(raw || '').trim();
+  if (!q) return [];
+  const terms = new Set<string>([q]);
+  if (/^\d{5}$/.test(q)) {
+    terms.add(`${JOB_NUMBER_PREFIX}${q}`);
+  }
+  const mMatch = /^m(\d{5})$/i.exec(q);
+  if (mMatch) {
+    terms.add(mMatch[1]);
+    terms.add(`${JOB_NUMBER_PREFIX}${mMatch[1]}`);
+  }
+  return [...terms];
+}
+
+/** Match a stored jobNumber against a user search (digits-only or M-prefixed). */
+export function jobNumberMatchesSearch(
+  jobNumber: string | null | undefined,
+  search: string | null | undefined,
+): boolean {
+  const jn = String(jobNumber || '').trim();
+  const q = String(search || '').trim();
+  if (!q) return true;
+  if (!jn) return false;
+  const jnLower = jn.toLowerCase();
+  return expandJobNumberSearchTerms(q).some(term => {
+    const t = term.toLowerCase();
+    return jnLower === t || jnLower.includes(t);
+  });
 }
 
 export const DELIVERY_MSG = `*Please collect your belongings within 7 days of this message. We shall not be responsible thereafter.*
@@ -177,6 +225,22 @@ export function formatWhatsAppPaymentSummary(
 }
 
 /**
+ * READY message payment summary after at least one partial delivery.
+ * Shows remaining undelivered items only — not the original full job total.
+ */
+export function formatWhatsAppRemainingPaymentSummary(
+  remainingItemsTotal: number,
+  paidTowardsRemaining: number,
+  remainingItemsBalance: number,
+): string {
+  return `💰 *PAYMENT SUMMARY*
+
+*REMAINING ITEMS TOTAL*   : ${formatINR(remainingItemsTotal)}
+*PAID TOWARDS REMAINING*  : ${formatINR(paidTowardsRemaining)}
+*BALANCE PAYABLE*         : ${formatINR(remainingItemsBalance)}`;
+}
+
+/**
  * Full repair-receipt WhatsApp body (after customer header), including thank-you + community invite.
  */
 export function formatWhatsAppRepairReceiptBody(opts: {
@@ -251,8 +315,8 @@ function formatWhatsAppMoneyRows(rows: Array<{ label: string; amount: number }>)
 
 /**
  * Delivery WhatsApp body after item lines.
- * PARTIAL = selected items only. OVERALL = full job with job-level advance labeled separately.
- * Figures/calculations are unchanged — only labels and row layout are improved.
+ * PARTIAL = this delivery only. OVERALL = full job.
+ * Advance application is allocation of money already received — not a new payment.
  */
 export function formatWhatsAppDeliveryItems(
   delivered: Array<{
@@ -270,11 +334,25 @@ export function formatWhatsAppDeliveryItems(
   },
   overall: {
     jobTotal: number;
-    jobAdvancePaid: number;
-    deliveryPayments: number;
+    /** Original advance collected for the job */
+    originalAdvancePaid?: number;
+    /** @deprecated use originalAdvancePaid */
+    jobAdvancePaid?: number;
+    advanceAppliedTotal?: number;
+    remainingAdvanceBalance?: number;
+    /** Cash/UPI/card collected during deliveries (excludes advance) */
+    deliveryCashPaymentsTotal?: number;
+    /** @deprecated use deliveryCashPaymentsTotal */
+    deliveryPayments?: number;
     totalPaid: number;
     balancePayable: number;
   },
+  /** After this delivery — remaining open items (omit on final delivery). */
+  remainingAfter?: {
+    remainingItemsTotal: number;
+    paidTowardsRemaining: number;
+    remainingItemsBalance: number;
+  } | null,
 ): string {
   const blocks = delivered.map(d => {
     const icon = ITEM_ICONS[d.itemType] || '';
@@ -283,28 +361,63 @@ export function formatWhatsAppDeliveryItems(
 Amount : ${formatINR(d.amount)}`;
   }).join('\n\n');
 
-  const selectedItemsTotal = delivered.reduce((s, d) => s + Math.max(0, Number(d.amount) || 0), 0);
+  const selectedItemsTotal = Math.max(0, Number(partial.selectedItemsTotal) || 0);
   const paymentReceivedNow = Math.max(0, Number(partial.paymentReceivedNow) || 0);
-  const advanceApplied = Math.max(0, Number(partial.advanceAppliedThisDelivery) || 0);
+  const advanceAppliedNow = Math.max(0, Number(partial.advanceAppliedThisDelivery) || 0);
+  // Prefer caller-computed balance (accounts for prior item cash + advance).
   const balanceForDeliveredItems = Math.max(
     0,
-    selectedItemsTotal - advanceApplied - paymentReceivedNow,
+    Number(partial.balanceForDeliveredItems) >= 0
+      ? Number(partial.balanceForDeliveredItems)
+      : selectedItemsTotal - advanceAppliedNow - paymentReceivedNow,
   );
 
   const partialRows = formatWhatsAppMoneyRows([
     { label: 'Delivered Items Total', amount: selectedItemsTotal },
+    { label: 'Advance Applied Now', amount: advanceAppliedNow },
     { label: 'Payment Received Now', amount: paymentReceivedNow },
-    { label: 'Job Advance Applied', amount: advanceApplied },
     { label: 'Delivered Items Balance', amount: balanceForDeliveredItems },
   ]);
 
+  const originalAdvance = Math.max(
+    0,
+    Number(overall.originalAdvancePaid ?? overall.jobAdvancePaid) || 0,
+  );
+  const advanceUsed = Math.max(0, Number(overall.advanceAppliedTotal) || 0);
+  const advanceBalance = Math.max(
+    0,
+    overall.remainingAdvanceBalance != null
+      ? Number(overall.remainingAdvanceBalance) || 0
+      : originalAdvance - advanceUsed,
+  );
+  const deliveryCash = Math.max(
+    0,
+    Number(overall.deliveryCashPaymentsTotal ?? overall.deliveryPayments) || 0,
+  );
+
   const overallRows = formatWhatsAppMoneyRows([
     { label: 'Job Total', amount: overall.jobTotal },
-    { label: 'Job Advance', amount: overall.jobAdvancePaid },
-    { label: 'Delivery Payments', amount: overall.deliveryPayments },
+    { label: 'Original Advance', amount: originalAdvance },
+    { label: 'Advance Already Used', amount: advanceUsed },
+    { label: 'Advance Balance', amount: advanceBalance },
+    { label: 'Delivery Payments', amount: deliveryCash },
     { label: 'Total Paid', amount: overall.totalPaid },
     { label: 'Balance Payable', amount: overall.balancePayable },
   ]);
+
+  const remainingBlock =
+    remainingAfter && remainingAfter.remainingItemsTotal > 0.0001
+      ? `
+
+${WA_SECTION_DIVIDER}
+📋 *REMAINING ITEMS*
+
+${formatWhatsAppMoneyRows([
+  { label: 'Remaining Items Total', amount: remainingAfter.remainingItemsTotal },
+  { label: 'Paid Towards Remaining', amount: remainingAfter.paidTowardsRemaining },
+  { label: 'Balance Payable', amount: remainingAfter.remainingItemsBalance },
+])}`
+      : '';
 
   return `${blocks}
 
@@ -316,7 +429,7 @@ ${partialRows}
 ${WA_SECTION_DIVIDER}
 💰 *OVERALL JOB PAYMENT*
 
-${overallRows}
+${overallRows}${remainingBlock}
 
 ${WA_SECTION_DIVIDER}`;
 }

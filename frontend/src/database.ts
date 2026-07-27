@@ -1,7 +1,7 @@
 import * as SQLite from 'expo-sqlite';
 import { RepairJob, RepairItem, CustomPhrase, BackupData, mapLegacyStatus, DiagnosisPhrase, DiagnosisCategory, DEFAULT_DIAGNOSIS_PHRASES, MAX_DIAGNOSIS_FAVOURITES, normalizeDiagnosisPhraseKey, normalizeServicePhraseKey, SERVICE_PHRASE_ALL_ITEMS, mapDiagnosisCategoryToItemType, DIAGNOSIS_ITEM_TYPES, getItemAmount } from './types';
-import { DEFAULT_PHRASES } from './constants';
-import { normalizePhotos } from './photos';
+import { DEFAULT_PHRASES, generateJobNumber } from './constants';
+import { normalizePhotos, preparePhotosForStorage } from './photos';
 
 let db: SQLite.SQLiteDatabase | null = null;
 
@@ -98,6 +98,11 @@ async function ensureJobAdvanceSeparationMigration(): Promise<void> {
   if (!db) return;
   try {
     await db.runAsync(`ALTER TABLE repair_items ADD COLUMN advanceApplied REAL DEFAULT 0`);
+  } catch {
+    // exists
+  }
+  try {
+    await db.runAsync(`ALTER TABLE repair_items ADD COLUMN lastDeliveryTxnId TEXT DEFAULT ''`);
   } catch {
     // exists
   }
@@ -209,6 +214,52 @@ async function migrateOldRecords(): Promise<void> {
 }
 
 // ============ JOBS CRUD ============
+
+/** Exact match on full stored Job ID (e.g. M48372). Does not rewrite legacy IDs. */
+export async function jobNumberExists(jobNumber: string): Promise<boolean> {
+  if (!db) return false;
+  const n = String(jobNumber || '').trim();
+  if (!n) return false;
+  const row = await db.getFirstAsync<{ c: number }>(
+    `SELECT COUNT(*) as c FROM repair_jobs WHERE jobNumber = ?`,
+    [n],
+  );
+  return (row?.c ?? 0) > 0;
+}
+
+/**
+ * Allocate a unique Pro Job ID (Mxxxxx). Retries on collision.
+ * Legacy numbers are never modified.
+ */
+async function isJobNumberAvailable(candidate: string): Promise<boolean> {
+  if (await jobNumberExists(candidate)) return false;
+  try {
+    const sync = await import('./sync');
+    if (await sync.isJobNumberTakenInCloud(candidate)) return false;
+  } catch {
+    /* offline / unavailable — local uniqueness still enforced */
+  }
+  return true;
+}
+
+/**
+ * Prefer the on-screen Job ID when still free; otherwise allocate a new Mxxxxx.
+ * Legacy numbers are never rewritten.
+ */
+export async function allocateUniqueJobNumber(
+  preferred?: string,
+  maxAttempts = 40,
+): Promise<string> {
+  const pref = String(preferred || '').trim();
+  if (pref && (await isJobNumberAvailable(pref))) return pref;
+
+  for (let i = 0; i < maxAttempts; i++) {
+    const candidate = generateJobNumber();
+    if (await isJobNumberAvailable(candidate)) return candidate;
+  }
+  throw new Error('Could not allocate a unique Job ID');
+}
+
 export async function createJob(job: Omit<RepairJob,'items'>, items: RepairItem[]): Promise<void> {
   // New jobs are cloud-eligible when live sync is enabled (not bulk historical migration)
   let cloudSyncEnabled = !!job.cloudSyncEnabled;
@@ -221,11 +272,17 @@ export async function createJob(job: Omit<RepairJob,'items'>, items: RepairItem[
     /* keep job.cloudSyncEnabled */
   }
 
+  const jobNumber = String(job.jobNumber || '').trim();
+  if (!jobNumber) throw new Error('Job ID is required');
+  if (await jobNumberExists(jobNumber)) {
+    throw new Error(`Job ID ${jobNumber} already exists`);
+  }
+
   await db!.runAsync(
     `INSERT INTO repair_jobs (id,jobNumber,customerName,mobileNumber,countryCode,receivedDate,advanceAmount,overallNotes,googleReviewSent,cloudSyncEnabled,createdAt,updatedAt)
      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
     [
-      job.id, job.jobNumber, job.customerName, job.mobileNumber, job.countryCode, job.receivedDate,
+      job.id, jobNumber, job.customerName, job.mobileNumber, job.countryCode, job.receivedDate,
       job.advanceAmount, job.overallNotes, job.googleReviewSent ? 1 : 0, cloudSyncEnabled ? 1 : 0,
       job.createdAt, job.updatedAt,
     ]
@@ -252,15 +309,15 @@ export async function setJobCloudSyncEnabled(jobId: string, enabled: boolean): P
 
 async function insertItem(item: RepairItem): Promise<void> {
   await db!.runAsync(
-    `INSERT INTO repair_items (id,jobId,itemNumber,itemType,brand,model,color,identification,description,selectedPhrases,customerComplaint,accessoriesReceived,estimatedAmount,finalAmount,amountPaid,advanceApplied,refundAmount,nonRefundableCharges,returnedDate,technicianNotes,photos,status,expectedDeliveryDate,warrantyDetails,delivered,deliveredDate,createdAt,updatedAt)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    `INSERT INTO repair_items (id,jobId,itemNumber,itemType,brand,model,color,identification,description,selectedPhrases,customerComplaint,accessoriesReceived,estimatedAmount,finalAmount,amountPaid,advanceApplied,refundAmount,nonRefundableCharges,returnedDate,technicianNotes,photos,status,expectedDeliveryDate,warrantyDetails,delivered,deliveredDate,lastDeliveryTxnId,createdAt,updatedAt)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [
       item.id, item.jobId, item.itemNumber, item.itemType, item.brand, item.model, item.color,
       item.identification, item.description, JSON.stringify(item.selectedPhrases),
       item.customerComplaint, item.accessoriesReceived, item.estimatedAmount, item.finalAmount,
       item.amountPaid || 0, item.advanceApplied || 0, item.refundAmount || 0, item.nonRefundableCharges || 0, item.returnedDate || '',
-      item.technicianNotes, JSON.stringify(normalizePhotos(item.photos)), item.status, item.expectedDeliveryDate,
-      item.warrantyDetails, item.delivered ? 1 : 0, item.deliveredDate, item.createdAt, item.updatedAt,
+      item.technicianNotes, JSON.stringify(preparePhotosForStorage(item.photos)), item.status, item.expectedDeliveryDate,
+      item.warrantyDetails, item.delivered ? 1 : 0, item.deliveredDate, item.lastDeliveryTxnId || '', item.createdAt, item.updatedAt,
     ]
   );
 }
@@ -371,6 +428,7 @@ function parseItem(row: any): RepairItem {
     refundAmount: row.refundAmount || 0,
     nonRefundableCharges: row.nonRefundableCharges || 0,
     returnedDate: row.returnedDate || '',
+    lastDeliveryTxnId: row.lastDeliveryTxnId || '',
   };
 }
 
@@ -390,14 +448,14 @@ export async function updateJob(job: Omit<RepairJob,'items'>): Promise<void> {
 export async function updateItem(item: RepairItem): Promise<void> {
   const now = new Date().toISOString();
   await db!.runAsync(
-    `UPDATE repair_items SET itemNumber=?,itemType=?,brand=?,model=?,color=?,identification=?,description=?,selectedPhrases=?,customerComplaint=?,accessoriesReceived=?,estimatedAmount=?,finalAmount=?,amountPaid=?,advanceApplied=?,refundAmount=?,nonRefundableCharges=?,returnedDate=?,technicianNotes=?,photos=?,status=?,expectedDeliveryDate=?,warrantyDetails=?,delivered=?,deliveredDate=?,updatedAt=? WHERE id=?`,
+    `UPDATE repair_items SET itemNumber=?,itemType=?,brand=?,model=?,color=?,identification=?,description=?,selectedPhrases=?,customerComplaint=?,accessoriesReceived=?,estimatedAmount=?,finalAmount=?,amountPaid=?,advanceApplied=?,refundAmount=?,nonRefundableCharges=?,returnedDate=?,technicianNotes=?,photos=?,status=?,expectedDeliveryDate=?,warrantyDetails=?,delivered=?,deliveredDate=?,lastDeliveryTxnId=?,updatedAt=? WHERE id=?`,
     [
       item.itemNumber, item.itemType, item.brand, item.model, item.color, item.identification,
       item.description, JSON.stringify(item.selectedPhrases), item.customerComplaint,
       item.accessoriesReceived, item.estimatedAmount, item.finalAmount, item.amountPaid || 0,
       item.advanceApplied || 0, item.refundAmount || 0, item.nonRefundableCharges || 0, item.returnedDate || '',
-      item.technicianNotes, JSON.stringify(normalizePhotos(item.photos)), item.status, item.expectedDeliveryDate,
-      item.warrantyDetails, item.delivered ? 1 : 0, item.deliveredDate, now, item.id,
+      item.technicianNotes, JSON.stringify(preparePhotosForStorage(item.photos)), item.status, item.expectedDeliveryDate,
+      item.warrantyDetails, item.delivered ? 1 : 0, item.deliveredDate, item.lastDeliveryTxnId || '', now, item.id,
     ]
   );
   // Also bump parent job updatedAt so conflict resolution sees item/payment edits
@@ -441,31 +499,184 @@ export async function markItemDelivered(
   date: string,
   amountPaid?: number,
   advanceApplied?: number,
+  deliveryTxnId?: string,
 ): Promise<void> {
-  const now = new Date().toISOString();
-  const jobId = await getJobIdByItemId(id);
+  const settlement: DeliveryItemSettlement = {
+    itemId: id,
+    amountPaid: amountPaid ?? undefined,
+    advanceApplied: advanceApplied ?? undefined,
+  };
+  // Prefer absolute settlement when both payment fields are provided
   if (amountPaid !== undefined && advanceApplied !== undefined) {
-    await db!.runAsync(
-      `UPDATE repair_items SET delivered=1, deliveredDate=?, status='Delivered', amountPaid=?, advanceApplied=?, updatedAt=? WHERE id=?`,
-      [date, Math.max(0, amountPaid), Math.max(0, advanceApplied), now, id]
-    );
+    settlement.amountPaid = Math.max(0, amountPaid);
+    settlement.advanceApplied = Math.max(0, advanceApplied);
   } else if (amountPaid !== undefined) {
-    await db!.runAsync(
-      `UPDATE repair_items SET delivered=1, deliveredDate=?, status='Delivered', amountPaid=?, updatedAt=? WHERE id=?`,
-      [date, Math.max(0, amountPaid), now, id]
-    );
-  } else {
-    await db!.runAsync(
-      `UPDATE repair_items SET delivered=1, deliveredDate=?, status='Delivered', updatedAt=? WHERE id=?`,
-      [date, now, id]
-    );
+    settlement.amountPaid = Math.max(0, amountPaid);
   }
-  if (jobId) {
-    await db!.runAsync(`UPDATE repair_jobs SET updatedAt=? WHERE id=?`, [now, jobId]);
-    notifyDataChanged({ jobId });
-  } else {
-    notifyDataChangedForBackup();
+  await markItemsDeliveredBatch([settlement], date, deliveryTxnId || '');
+}
+
+export type DeliveryItemSettlement = {
+  itemId: string;
+  /** Absolute delivery cash/UPI on the item after this delivery */
+  amountPaid?: number;
+  /** Absolute advance applied on the item after this delivery */
+  advanceApplied?: number;
+};
+
+/**
+ * Persist a partial/full delivery for one or more items in one shot.
+ * Idempotent when the same deliveryTxnId is already stored on every target item.
+ */
+async function ensureLastDeliveryTxnColumn(): Promise<void> {
+  if (!db) return;
+  try {
+    await db.runAsync(`ALTER TABLE repair_items ADD COLUMN lastDeliveryTxnId TEXT DEFAULT ''`);
+  } catch {
+    // already exists
   }
+}
+
+/**
+ * Persist a partial/full delivery for one or more items.
+ * Does NOT return success until SQLite re-read confirms status + payments.
+ * Idempotent when the same deliveryTxnId is already stored on every target item.
+ */
+export async function markItemsDeliveredBatch(
+  settlements: DeliveryItemSettlement[],
+  deliveredAt: string,
+  deliveryTxnId = '',
+): Promise<{ applied: boolean; jobId: string; job: RepairJob }> {
+  if (!db) {
+    throw new Error('Delivery failed: database is not open');
+  }
+  if (settlements.length === 0) {
+    throw new Error('Delivery failed: no items selected');
+  }
+
+  await ensureLastDeliveryTxnColumn();
+
+  const now = new Date().toISOString();
+  const date = deliveredAt || now;
+  const txnId = String(deliveryTxnId || '').trim();
+
+  const firstJobId = await getJobIdByItemId(settlements[0].itemId);
+  if (!firstJobId) {
+    throw new Error('Delivery failed: item not found in SQLite');
+  }
+
+  // Protect from concurrent Firestore pull BEFORE any write completes.
+  try {
+    const sync = await import('./sync');
+    sync.markJobDirtyImmediate(firstJobId);
+  } catch {
+    // sync module optional during early boot
+  }
+
+  // Idempotency: same txn already applied → return current job (no double pay)
+  if (txnId) {
+    let allSameTxn = true;
+    for (const s of settlements) {
+      const row = await db.getFirstAsync<{ lastDeliveryTxnId?: string; delivered?: number; status?: string }>(
+        `SELECT lastDeliveryTxnId, delivered, status FROM repair_items WHERE id=?`,
+        [s.itemId],
+      );
+      const delivered =
+        !!row?.delivered || String(row?.status || '').toLowerCase() === 'delivered';
+      if (!row || row.lastDeliveryTxnId !== txnId || !delivered) {
+        allSameTxn = false;
+        break;
+      }
+    }
+    if (allSameTxn) {
+      const existing = await getJob(firstJobId);
+      if (!existing) throw new Error('Delivery failed: job missing after idempotent check');
+      return { applied: false, jobId: firstJobId, job: existing };
+    }
+  }
+
+  // Plain sequential writes (avoid withTransactionAsync + nested SELECT quirks on Android).
+  for (const s of settlements) {
+    if (s.amountPaid === undefined || s.advanceApplied === undefined) {
+      throw new Error('Delivery failed: amountPaid and advanceApplied are required');
+    }
+    const paid = Math.max(0, Number(s.amountPaid) || 0);
+    const adv = Math.max(0, Number(s.advanceApplied) || 0);
+
+    const result = await db.runAsync(
+      `UPDATE repair_items
+       SET delivered=1,
+           deliveredDate=?,
+           status='Delivered',
+           amountPaid=?,
+           advanceApplied=?,
+           lastDeliveryTxnId=?,
+           updatedAt=?
+       WHERE id=?`,
+      [date, paid, adv, txnId, now, s.itemId],
+    );
+
+    const changes = Number((result as { changes?: number } | undefined)?.changes ?? -1);
+    if (changes === 0) {
+      throw new Error(`Delivery failed: SQLite updated 0 rows for item ${s.itemId}`);
+    }
+  }
+
+  await db.runAsync(`UPDATE repair_jobs SET updatedAt=? WHERE id=?`, [now, firstJobId]);
+
+  // Hard reload from SQLite — source of truth for UI replacement.
+  const job = await getJob(firstJobId);
+  if (!job) {
+    throw new Error('Delivery failed: could not reload job from SQLite');
+  }
+
+  for (const s of settlements) {
+    const item = job.items.find(i => i.id === s.itemId);
+    if (!item) {
+      throw new Error(`Delivery failed: item ${s.itemId} missing after SQLite save`);
+    }
+    const paid = Math.max(0, Number(s.amountPaid) || 0);
+    const adv = Math.max(0, Number(s.advanceApplied) || 0);
+    if (!item.delivered || String(item.status) !== 'Delivered') {
+      throw new Error(
+        `Delivery failed: SQLite still has status="${item.status}" delivered=${item.delivered} for item ${s.itemId}`,
+      );
+    }
+    if (Math.abs(Number(item.amountPaid) - paid) > 0.001) {
+      throw new Error(
+        `Delivery failed: SQLite amountPaid=${item.amountPaid} expected ${paid} for item ${s.itemId}`,
+      );
+    }
+    if (Math.abs(Number(item.advanceApplied) - adv) > 0.001) {
+      throw new Error(
+        `Delivery failed: SQLite advanceApplied=${item.advanceApplied} expected ${adv} for item ${s.itemId}`,
+      );
+    }
+  }
+
+  console.log('[delivery-debug] SQLite save verified', {
+    jobId: firstJobId,
+    txnId,
+    items: settlements.map(s => {
+      const item = job.items.find(i => i.id === s.itemId)!;
+      const totalPaidForItem = Number(item.amountPaid) + Number(item.advanceApplied);
+      const itemAmount = getItemAmount(item);
+      return {
+        id: item.id,
+        status: item.status,
+        delivered: item.delivered,
+        deliveredDate: item.deliveredDate,
+        amountPaid: item.amountPaid,
+        advanceApplied: item.advanceApplied,
+        totalPaidForItem,
+        itemBalance: Math.max(0, itemAmount - totalPaidForItem),
+        lastDeliveryTxnId: item.lastDeliveryTxnId,
+      };
+    }),
+  });
+
+  notifyDataChanged({ jobId: firstJobId });
+  return { applied: true, jobId: firstJobId, job };
 }
 
 /** Mark item as Returned / Not Repaired with refund details (does not change other items). */
@@ -1207,7 +1418,7 @@ export async function importData(jsonStr: string): Promise<number> {
             JSON.stringify(item.selectedPhrases || []), item.customerComplaint || '',
             item.accessoriesReceived || '', item.estimatedAmount || 0, item.finalAmount || 0,
             item.amountPaid || 0, item.advanceApplied || 0, item.refundAmount || 0, item.nonRefundableCharges || 0,
-            item.returnedDate || '', item.technicianNotes || '', JSON.stringify(normalizePhotos(item.photos)),
+            item.returnedDate || '', item.technicianNotes || '', JSON.stringify(preparePhotosForStorage(item.photos)),
             item.status, item.expectedDeliveryDate || '', item.warrantyDetails || '',
             item.delivered ? 1 : 0, item.deliveredDate || '', item.createdAt, item.updatedAt,
           ]

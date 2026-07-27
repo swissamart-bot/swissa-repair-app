@@ -1,6 +1,9 @@
 /**
  * Repair image helpers: normalize legacy string URIs, display priority,
  * compress + upload to Firebase Storage.
+ *
+ * Local files live under DocumentDirectory/repair-photos/{photoId}.jpg.
+ * SQLite stores only short path/URL strings — never image BLOBs or base64.
  */
 import { Platform } from 'react-native';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
@@ -8,8 +11,75 @@ import type { RepairItem, RepairJob, RepairPhoto, PhotoUploadStatus } from './ty
 import { getFirebaseAuth, getFirebaseStorage } from './firebase';
 import { signInAnonymously } from 'firebase/auth';
 
+const REPAIR_PHOTOS_DIR = 'repair-photos/';
+/** Reject anything that looks like embedded image data in SQLite. */
+const MAX_STORED_LOCAL_URI_LEN = 500;
+
 export function newPhotoId(): string {
   return `img_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function getFileSystem(): typeof import('expo-file-system/legacy') | null {
+  if (Platform.OS === 'web') return null;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return require('expo-file-system/legacy');
+  } catch {
+    return null;
+  }
+}
+
+/** App-private folder for repair JPEG files (native only). */
+export function getRepairPhotosRootDir(): string {
+  const FS = getFileSystem();
+  if (!FS?.documentDirectory) return '';
+  return `${FS.documentDirectory}${REPAIR_PHOTOS_DIR}`;
+}
+
+export function isRepairPhotosDirUri(uri: string | undefined | null): boolean {
+  if (!uri) return false;
+  const root = getRepairPhotosRootDir();
+  if (root && uri.startsWith(root)) return true;
+  return uri.includes(`/${REPAIR_PHOTOS_DIR}`) || uri.includes(`\\${REPAIR_PHOTOS_DIR.replace('/', '\\')}`);
+}
+
+/**
+ * Copy/move a captured or picked image into DocumentDirectory/repair-photos/.
+ * Returns a stable file:// path suitable for SQLite (path only, never base64).
+ * On web (no DocumentDirectory), returns the source URI if it is already a short path/URL.
+ */
+export async function persistPhotoToDocuments(
+  sourceUri: string,
+  photoId: string,
+): Promise<string> {
+  const source = String(sourceUri || '').trim();
+  if (!source) throw new Error('Missing photo source URI');
+
+  const FS = getFileSystem();
+  if (!FS?.documentDirectory) {
+    if (source.startsWith('data:') || source.length > MAX_STORED_LOCAL_URI_LEN) {
+      throw new Error('Cannot store large image data without app document storage');
+    }
+    return source;
+  }
+
+  const dir = `${FS.documentDirectory}${REPAIR_PHOTOS_DIR}`;
+  await FS.makeDirectoryAsync(dir, { intermediates: true });
+  const dest = `${dir}${photoId}.jpg`;
+
+  if (isRepairPhotosDirUri(source) && (source === dest || source.endsWith(`${photoId}.jpg`))) {
+    return source;
+  }
+
+  if (source.startsWith('data:')) {
+    const comma = source.indexOf(',');
+    const base64 = comma >= 0 ? source.slice(comma + 1) : source;
+    await FS.writeAsStringAsync(dest, base64, { encoding: FS.EncodingType.Base64 });
+    return dest;
+  }
+
+  await FS.copyAsync({ from: source, to: dest });
+  return dest;
 }
 
 export function isRemoteHttpUrl(uri: string | undefined | null): boolean {
@@ -81,6 +151,35 @@ export function normalizePhotos(raw: unknown): RepairPhoto[] {
   return out;
 }
 
+/**
+ * Photos ready for SQLite / in-memory persist: strip base64 and oversized local strings.
+ * Keeps cloudUrl + short file paths only.
+ */
+export function preparePhotosForStorage(photos: unknown): RepairPhoto[] {
+  return normalizePhotos(photos)
+    .map(p => {
+      let localUri = String(p.localUri || '');
+      if (
+        !localUri ||
+        localUri.startsWith('data:') ||
+        localUri.length > MAX_STORED_LOCAL_URI_LEN
+      ) {
+        localUri = '';
+      }
+      const cloudUrl =
+        p.cloudUrl && isRemoteHttpUrl(p.cloudUrl) ? p.cloudUrl : '';
+      return {
+        id: p.id,
+        localUri,
+        cloudUrl,
+        storagePath: String(p.storagePath || ''),
+        uploadStatus: cloudUrl ? ('uploaded' as PhotoUploadStatus) : p.uploadStatus,
+        uploadedAt: String(p.uploadedAt || ''),
+      };
+    })
+    .filter(p => !!(p.localUri || p.cloudUrl));
+}
+
 export function photoHasDisplayableSource(p: RepairPhoto): boolean {
   if (p.cloudUrl && isRemoteHttpUrl(p.cloudUrl)) return true;
   if (Platform.OS !== 'web' && p.localUri) return true;
@@ -142,10 +241,16 @@ export function countLocalOnlyPhotos(jobs: RepairJob[]): number {
   return n;
 }
 
-export function createPhotoFromCapture(uri: string): RepairPhoto {
+/**
+ * Persist picker/camera URI into DocumentDirectory, then return a RepairPhoto
+ * whose localUri is only that stable file path (never a BLOB / base64 string).
+ */
+export async function createPhotoFromCapture(uri: string): Promise<RepairPhoto> {
+  const id = newPhotoId();
+  const localUri = await persistPhotoToDocuments(uri, id);
   return {
-    id: newPhotoId(),
-    localUri: uri,
+    id,
+    localUri,
     cloudUrl: '',
     storagePath: '',
     uploadStatus: 'pending',
@@ -155,13 +260,14 @@ export function createPhotoFromCapture(uri: string): RepairPhoto {
 
 /** Strip huge base64 blobs before Firestore sync; keep cloud URLs + short path refs. */
 export function sanitizePhotosForCloud(photos: unknown): RepairPhoto[] {
-  return normalizePhotos(photos).map(p => {
+  return preparePhotosForStorage(photos).map(p => {
     const local = p.localUri || '';
+    // Prefer durable app paths; do not sync transient content:// cache URIs.
     const keepLocal =
-      local &&
-      !local.startsWith('data:') &&
-      local.length < 500 &&
-      (local.startsWith('file://') || local.startsWith('content://') || local.startsWith('http'));
+      !!local &&
+      (isRepairPhotosDirUri(local) ||
+        local.startsWith('file://') ||
+        local.startsWith('http'));
     return {
       id: p.id,
       localUri: keepLocal ? local : '',

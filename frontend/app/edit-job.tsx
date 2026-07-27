@@ -178,14 +178,15 @@ export default function EditJobScreen() {
 
         if (idx === 0 && photo !== originalPhoto) {
           if (photo) {
-            photos = [createPhotoFromCapture(photo), ...photos];
+            // Copy into DocumentDirectory; SQLite stores the file path only.
+            photos = [await createPhotoFromCapture(photo)];
           } else {
             photos = [];
           }
         }
 
         let savedPhotos = photos;
-        if (idx === 0 && photo && photo !== originalPhoto) {
+        if (idx === 0 && photo && photo !== originalPhoto && photos[0]) {
           try {
             savedPhotos = [await uploadRepairPhoto(photos[0], jobMeta.id, item.id)];
           } catch (uploadErr) {

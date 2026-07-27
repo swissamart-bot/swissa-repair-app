@@ -71,6 +71,11 @@ export interface RepairItem {
   warrantyDetails: string;
   delivered: boolean;
   deliveredDate: string;
+  /**
+   * Idempotency key for the delivery transaction that settled this item.
+   * Re-submitting the same txn must not alter payments again.
+   */
+  lastDeliveryTxnId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -387,6 +392,106 @@ export function getUnallocatedAdvance(
   return Math.max(0, getJobAdvancePaid(advanceAmount) - getAdvanceAppliedTotal(items));
 }
 
+/**
+ * Undelivered open items that still count toward a "remaining items" READY summary.
+ * Excludes Delivered, Cancelled, and Returned / Not Repaired.
+ */
+export function isItemRemainingOpen(item: { status?: string; delivered?: boolean }): boolean {
+  return (
+    !isItemDelivered({ status: item.status || '', delivered: item.delivered }) &&
+    !isStatusCancelled(item.status || '') &&
+    !isItemReturned(item)
+  );
+}
+
+/**
+ * Settlement already consumed by a delivered item (cash + advance applied),
+ * capped at the item amount — never a new payment.
+ */
+export function getDeliveredItemSettledValue(item: {
+  finalAmount?: number;
+  estimatedAmount?: number;
+  amountPaid?: number;
+  advanceApplied?: number;
+  status?: string;
+  delivered?: boolean;
+}): number {
+  if (!isItemDelivered({ status: item.status || '', delivered: item.delivered })) return 0;
+  const amount = getItemAmount(item);
+  const settled = getItemSpecificPaid(item) + getItemAdvanceApplied(item);
+  return Math.min(amount, Math.max(0, settled));
+}
+
+/**
+ * Payment summary for items still left in the job after partial delivery.
+ *
+ * remainingItemsTotal =
+ *   Σ amounts of items that are not Delivered / Cancelled / Returned
+ *
+ * paymentsAvailableForRemainingItems =
+ *   max(0, totalJobPaymentsReceived − valueSettledAgainstDeliveredItems)
+ *
+ * remainingItemsBalance =
+ *   max(0, remainingItemsTotal − paymentsAvailableForRemainingItems)
+ *
+ * Does not mutate historical records or reallocate prior payments.
+ */
+export function getRemainingItemsPaymentSummary(
+  items: Array<{
+    finalAmount?: number;
+    estimatedAmount?: number;
+    amountPaid?: number;
+    advanceApplied?: number;
+    refundAmount?: number;
+    status?: string;
+    delivered?: boolean;
+  }>,
+  advanceAmount = 0,
+) {
+  const remainingItems = items.filter(isItemRemainingOpen);
+  const remainingItemsTotal = remainingItems.reduce((s, i) => s + getItemAmount(i), 0);
+
+  const valueSettledAgainstDeliveredItems = items.reduce(
+    (s, i) => s + getDeliveredItemSettledValue(i),
+    0,
+  );
+
+  const breakdown = getJobPaymentBreakdown(items, advanceAmount);
+  const totalJobPaymentsReceived = Math.max(
+    0,
+    breakdown.originalAdvancePaid + breakdown.deliveryCashPaymentsTotal,
+  );
+
+  const paymentsAvailableForRemainingItems = Math.max(
+    0,
+    totalJobPaymentsReceived - valueSettledAgainstDeliveredItems,
+  );
+  const paidTowardsRemaining = Math.min(
+    remainingItemsTotal,
+    paymentsAvailableForRemainingItems,
+  );
+  const remainingItemsBalance = Math.max(
+    0,
+    remainingItemsTotal - paymentsAvailableForRemainingItems,
+  );
+
+  const hasPartialDelivery = items.some(i =>
+    isItemDelivered({ status: i.status || '', delivered: i.delivered }),
+  );
+
+  return {
+    remainingItemsTotal,
+    valueSettledAgainstDeliveredItems,
+    totalJobPaymentsReceived,
+    paymentsAvailableForRemainingItems,
+    paidTowardsRemaining,
+    remainingItemsBalance,
+    hasPartialDelivery,
+    /** Full original job total — for history / full-job views only */
+    originalJobTotal: breakdown.jobTotal,
+  };
+}
+
 /** Sum of item-specific delivery/collection payments (excludes job advance). */
 export function getDeliveryPaymentsTotal(
   items: Array<{ amountPaid?: number }>,
@@ -412,8 +517,14 @@ export function getChargeableJobItemAmount(item: {
 }
 
 /**
- * Total Paid = Job Advance + All Delivery Payments − Total Refunds
- * Balance Payable = Full Job Total − Total Paid
+ * Job payment breakdown — advance is counted ONCE as money already received.
+ *
+ * originalAdvancePaid     = job.advanceAmount (never added again via advanceApplied)
+ * advanceAppliedTotal     = Σ item.advanceApplied (allocation only, not a new payment)
+ * remainingAdvanceBalance = max(0, originalAdvancePaid − advanceAppliedTotal)
+ * deliveryCashPaymentsTotal = Σ item.amountPaid (cash/UPI/card only)
+ * totalPaidForJob         = originalAdvancePaid + deliveryCashPaymentsTotal − refunds
+ * jobBalancePayable       = max(0, jobTotal − totalPaidForJob)
  */
 export function getJobPaymentBreakdown(
   items: Array<{
@@ -429,21 +540,29 @@ export function getJobPaymentBreakdown(
   advanceAmount = 0,
 ) {
   const jobTotal = items.reduce((s, i) => s + getChargeableJobItemAmount(i), 0);
-  const jobAdvancePaid = getJobAdvancePaid(advanceAmount);
-  const deliveryPayments = getDeliveryPaymentsTotal(items);
+  const originalAdvancePaid = getJobAdvancePaid(advanceAmount);
+  const advanceAppliedTotal = getAdvanceAppliedTotal(items);
+  const remainingAdvanceBalance = Math.max(0, originalAdvancePaid - advanceAppliedTotal);
+  const deliveryCashPaymentsTotal = getDeliveryPaymentsTotal(items);
   const totalRefunded = items.reduce((s, i) => s + getItemRefund(i), 0);
-  const totalPaid = Math.max(0, jobAdvancePaid + deliveryPayments - totalRefunded);
+  // Never add advanceAppliedTotal here — that would double-count the advance.
+  const totalPaid = Math.max(0, originalAdvancePaid + deliveryCashPaymentsTotal - totalRefunded);
   const balancePayable = Math.max(0, jobTotal - totalPaid);
-  const unallocatedAdvance = getUnallocatedAdvance(advanceAmount, items);
   return {
     jobTotal,
-    jobAdvancePaid,
-    deliveryPayments,
+    /** @deprecated use originalAdvancePaid */
+    jobAdvancePaid: originalAdvancePaid,
+    originalAdvancePaid,
+    advanceAppliedTotal,
+    remainingAdvanceBalance,
+    /** @deprecated use remainingAdvanceBalance */
+    unallocatedAdvance: remainingAdvanceBalance,
+    /** @deprecated use deliveryCashPaymentsTotal */
+    deliveryPayments: deliveryCashPaymentsTotal,
+    deliveryCashPaymentsTotal,
     totalRefunded,
     totalPaid,
     balancePayable,
-    unallocatedAdvance,
-    advanceAppliedTotal: getAdvanceAppliedTotal(items),
   };
 }
 
@@ -518,8 +637,8 @@ export function allocateAdvanceAcrossItems<T extends {
 }
 
 /**
- * Overall job payment summary AFTER saving the current delivery.
- * Total Paid = Job Advance + Delivery Payments − Refunds (advance counted once).
+ * Overall job payment summary AFTER applying the current delivery allocations.
+ * Advance application is allocation only — never added again into totalPaid.
  */
 export function getOverallJobPaymentSummaryAfterDelivery(
   allItems: Array<{
@@ -539,9 +658,9 @@ export function getOverallJobPaymentSummaryAfterDelivery(
   advanceAppliedById: Map<string, number>,
 ) {
   const jobTotal = allItems.reduce((s, i) => s + getChargeableJobItemAmount(i), 0);
-  const jobAdvancePaid = getJobAdvancePaid(jobAdvanceAmount);
+  const originalAdvancePaid = getJobAdvancePaid(jobAdvanceAmount);
 
-  const deliveryPayments = allItems.reduce((s, i) => {
+  const deliveryCashPaymentsTotal = allItems.reduce((s, i) => {
     const base = getItemSpecificPaid(i);
     if (selectedIds.has(i.id)) {
       return s + base + (paymentAppliedById.get(i.id) || 0);
@@ -549,40 +668,86 @@ export function getOverallJobPaymentSummaryAfterDelivery(
     return s + base;
   }, 0);
 
+  const advanceAppliedTotal = allItems.reduce((s, i) => {
+    const base = getItemAdvanceApplied(i);
+    if (selectedIds.has(i.id)) {
+      return s + base + (advanceAppliedById.get(i.id) || 0);
+    }
+    return s + base;
+  }, 0);
+
+  const remainingAdvanceBalance = Math.max(0, originalAdvancePaid - advanceAppliedTotal);
   const totalRefunded = allItems.reduce((s, i) => s + getItemRefund(i), 0);
-  const totalPaid = Math.max(0, jobAdvancePaid + deliveryPayments - totalRefunded);
+  const totalPaid = Math.max(0, originalAdvancePaid + deliveryCashPaymentsTotal - totalRefunded);
   const balancePayable = Math.max(0, jobTotal - totalPaid);
+
+  const deliveryPaymentsThisDelivery = [...paymentAppliedById.values()].reduce(
+    (s, n) => s + Math.max(0, n),
+    0,
+  );
+  const advanceAppliedThisDelivery = [...advanceAppliedById.values()].reduce(
+    (s, n) => s + Math.max(0, n),
+    0,
+  );
 
   return {
     jobTotal,
-    jobAdvancePaid,
-    deliveryPayments,
-    deliveryPaymentsThisDelivery: [...paymentAppliedById.values()].reduce(
-      (s, n) => s + Math.max(0, n),
-      0,
-    ),
-    advanceAppliedThisDelivery: [...advanceAppliedById.values()].reduce(
-      (s, n) => s + Math.max(0, n),
-      0,
-    ),
+    originalAdvancePaid,
+    /** @deprecated use originalAdvancePaid */
+    jobAdvancePaid: originalAdvancePaid,
+    advanceAppliedTotal,
+    remainingAdvanceBalance,
+    deliveryCashPaymentsTotal,
+    /** @deprecated use deliveryCashPaymentsTotal */
+    deliveryPayments: deliveryCashPaymentsTotal,
+    deliveryPaymentsThisDelivery,
+    advanceAppliedThisDelivery,
     totalRefunded,
     totalPaid,
     balancePayable,
   };
 }
 
+/** Delivery cash/UPI/card applied to this item (excludes job advance). */
+export function getItemDeliveryPaymentApplied(item: { amountPaid?: number }): number {
+  return getItemSpecificPaid(item);
+}
+
 /**
- * Item face balance for display: amount − item-specific paid only.
- * Does NOT subtract job-level advance.
+ * Total settled against this item = delivery payment + advance applied.
+ * This is what the item card shows as "Paid specifically for this item".
+ */
+export function getItemTotalPaidForItem(item: {
+  amountPaid?: number;
+  advanceApplied?: number;
+}): number {
+  return getItemDeliveryPaymentApplied(item) + getItemAdvanceApplied(item);
+}
+
+/**
+ * Item balance after cash + advance settlement.
+ * Fully settled delivered items → ₹0.
  */
 export function getItemBalance(item: {
   finalAmount?: number;
   estimatedAmount?: number;
   amountPaid?: number;
+  advanceApplied?: number;
   status?: string;
 }): number {
   if (isItemReturned(item)) return 0;
-  return Math.max(0, getItemAmount(item) - getItemSpecificPaid(item));
+  return Math.max(0, getItemAmount(item) - getItemTotalPaidForItem(item));
+}
+
+/** Status label for UI: Delivered wins over a stale Ready string when delivered=true. */
+export function getItemDisplayStatus(item: {
+  status?: string;
+  delivered?: boolean;
+}): string {
+  if (isItemDelivered({ status: item.status || '', delivered: item.delivered })) return 'Delivered';
+  if (isItemReturned(item)) return 'Not Repaired';
+  if (isStatusCancelled(item.status || '')) return 'Cancelled';
+  return item.status || 'Received';
 }
 
 export type ItemPaymentStatus = 'Unpaid' | 'Partially Paid' | 'Paid';
@@ -591,9 +756,10 @@ export function getItemPaymentStatus(item: {
   finalAmount?: number;
   estimatedAmount?: number;
   amountPaid?: number;
+  advanceApplied?: number;
 }): ItemPaymentStatus {
   const amount = getItemAmount(item);
-  const paid = getItemPaid(item);
+  const paid = getItemTotalPaidForItem(item);
   if (amount <= 0) return paid > 0 ? 'Paid' : 'Unpaid';
   if (paid <= 0) return 'Unpaid';
   if (paid + 0.0001 >= amount) return 'Paid';
@@ -610,6 +776,7 @@ export function allocatePaymentAcrossItems<T extends {
   finalAmount?: number;
   estimatedAmount?: number;
   amountPaid?: number;
+  advanceApplied?: number;
 }>(items: T[], paymentPool: number): Map<string, number> {
   let remaining = Math.max(0, Number(paymentPool) || 0);
   const applied = new Map<string, number>();
@@ -715,10 +882,14 @@ export function getJobTotals(
     netRetained,
     balance: pay.balancePayable,
     activeTotal,
-    advance: pay.jobAdvancePaid,
-    jobAdvancePaid: pay.jobAdvancePaid,
-    deliveryPayments: pay.deliveryPayments,
-    unallocatedAdvance: pay.unallocatedAdvance,
+    advance: pay.originalAdvancePaid,
+    jobAdvancePaid: pay.originalAdvancePaid,
+    originalAdvancePaid: pay.originalAdvancePaid,
+    advanceAppliedTotal: pay.advanceAppliedTotal,
+    remainingAdvanceBalance: pay.remainingAdvanceBalance,
+    deliveryPayments: pay.deliveryCashPaymentsTotal,
+    deliveryCashPaymentsTotal: pay.deliveryCashPaymentsTotal,
+    unallocatedAdvance: pay.remainingAdvanceBalance,
   };
 }
 
@@ -803,6 +974,7 @@ export function createEmptyItem(jobId: string, itemNumber: number): RepairItem {
     warrantyDetails: '',
     delivered: false,
     deliveredDate: '',
+    lastDeliveryTxnId: '',
     createdAt: now,
     updatedAt: now,
   };

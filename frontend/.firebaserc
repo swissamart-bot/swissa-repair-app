@@ -1,0 +1,7 @@
+{
+  "projects": {
+    "default": "swissa-repair-pro",
+    "v1-stable": "swissa-repair",
+    "pro": "swissa-repair-pro"
+  }
+}

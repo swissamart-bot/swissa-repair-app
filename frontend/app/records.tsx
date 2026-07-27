@@ -7,7 +7,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
 import * as Linking from 'expo-linking';
-import { getAllJobs, getJob, updateItem, deleteJob, markItemDelivered, markItemReturned, getConfig, setConfig, countJobsByCustomer, getJobsByCustomer } from '../src/database';
+import { getAllJobs, getJob, updateItem, deleteJob, markItemsDeliveredBatch, markItemReturned, getConfig, setConfig, countJobsByCustomer, getJobsByCustomer } from '../src/database';
+import { pushJobNow } from '../src/sync';
 import { enableCloudSyncForJob } from '../src/sync';
 import {
   getIncludeGoogleReviewDefault,
@@ -15,7 +16,7 @@ import {
   formatGoogleReviewWhatsAppSection,
 } from '../src/shopSettings';
 import { getFirstDisplayUri, getThumbnailUri, itemHasPhotoRecords } from '../src/photos';
-import { C, SHOP, ITEM_ICONS, DELIVERY_MSG, getStatusColor, getOverallStatusColor, formatWhatsAppCustomerHeader, formatWhatsAppItemBreakdown, formatWhatsAppRepairReceiptBody, WA_SECTION_DIVIDER, formatWhatsAppPaymentSummary, formatWhatsAppCommunityFooter, formatWhatsAppDeliveryItems, formatWhatsAppReturnedItemList } from '../src/constants';
+import { C, SHOP, ITEM_ICONS, DELIVERY_MSG, getStatusColor, getOverallStatusColor, formatWhatsAppCustomerHeader, formatWhatsAppItemBreakdown, formatWhatsAppRepairReceiptBody, WA_SECTION_DIVIDER, formatWhatsAppPaymentSummary, formatWhatsAppRemainingPaymentSummary, formatWhatsAppCommunityFooter, formatWhatsAppDeliveryItems, formatWhatsAppReturnedItemList, jobNumberMatchesSearch } from '../src/constants';
 import { SyncStatusBadge } from '../src/SyncStatus';
 import { subscribeSyncStatus, type SyncUiStatus } from '../src/sync';
 import {
@@ -23,7 +24,8 @@ import {
   getItemPaymentStatus, allocatePaymentAcrossItems, getSubsetPaymentSummary,
   calcRefundableAmount, getItemRefund, getItemNonRefundable, getItemSpecificPaid,
   getSelectedDeliveryPaymentSummary, getOverallJobPaymentSummaryAfterDelivery,
-  allocateAdvanceAcrossItems, getUnallocatedAdvance,
+  allocateAdvanceAcrossItems, getUnallocatedAdvance, getRemainingItemsPaymentSummary,
+  getItemAdvanceApplied, getItemTotalPaidForItem, getItemDisplayStatus,
   RECORDS_QUICK_STATUSES, formatINR, getItemStatusSummary,
   isItemDelivered, isItemReadyUndelivered, isItemUnfinishedNotReady, isStatusCancelled,
   isItemReturnable, isItemReturned, isItemActivePayable,
@@ -119,10 +121,11 @@ function stripPhotosFromJobs(jobs: RepairJob[]): ListJob[] {
 
 function matchesSearch(job: ListJob, search: string, dateSearch: string): boolean {
   const q = search.toLowerCase().trim();
+  // Job ID: "48372" and "M48372" both match the same Pro job (M prefix added internally).
   const matchSearch = !q ||
     job.customerName.toLowerCase().includes(q) ||
     job.mobileNumber.includes(q) ||
-    job.jobNumber.includes(q) ||
+    jobNumberMatchesSearch(job.jobNumber, search) ||
     job.items.some(i =>
       i.itemType.toLowerCase().includes(q) ||
       (i.brand || '').toLowerCase().includes(q) ||
@@ -290,8 +293,9 @@ const JobCard = memo(function JobCard({
           </TouchableOpacity>
 
           {job.items.map((item, idx) => {
-            const sc = getStatusColor(item.status);
-            const accent = getItemAccentColor(item.status);
+            const displayStatus = getItemDisplayStatus(item);
+            const sc = getStatusColor(displayStatus);
+            const accent = getItemAccentColor(displayStatus);
             const diagnosis = (item.technicianNotes || '').trim();
             const service = (item.description || '').trim();
             return (
@@ -330,7 +334,7 @@ const JobCard = memo(function JobCard({
                 </Text>
                 <Text style={st.itemReadOnly}>
                   <Text style={st.itemReadOnlyLabel}>Paid specifically for this item: </Text>
-                  {formatINR(getItemSpecificPaid(item))}
+                  {formatINR(getItemTotalPaidForItem(item))}
                   {' · '}
                   <Text style={st.itemReadOnlyLabel}>Item balance: </Text>
                   {formatINR(getItemBalance(item))}
@@ -347,7 +351,7 @@ const JobCard = memo(function JobCard({
                 ) : null}
                 <View style={{ flexDirection: 'row', gap: 6, marginTop: 8, flexWrap: 'wrap', alignItems: 'center' }}>
                   <View style={[st.statusBadge, { backgroundColor: sc.bg }]}>
-                    <Text style={[st.statusText, { color: sc.text }]}>{item.status || 'Unknown'}</Text>
+                    <Text style={[st.statusText, { color: sc.text }]}>{displayStatus}</Text>
                   </View>
                   {ITEM_ICONS[item.itemType] ? (
                     <Text style={st.itemEst}>{ITEM_ICONS[item.itemType]} {item.itemType}</Text>
@@ -367,12 +371,22 @@ const JobCard = memo(function JobCard({
                 <Text style={st.paymentValue}>{formatINR(totals.displayTotal)}</Text>
               </View>
               <View style={st.paymentRow}>
-                <Text style={st.paymentLabel}>Job Advance Paid</Text>
-                <Text style={st.paymentValue}>{formatINR(totals.jobAdvancePaid ?? totals.advance)}</Text>
+                <Text style={st.paymentLabel}>Original Advance</Text>
+                <Text style={st.paymentValue}>{formatINR(totals.originalAdvancePaid ?? totals.jobAdvancePaid ?? totals.advance)}</Text>
+              </View>
+              {(totals.advanceAppliedTotal ?? 0) > 0 ? (
+                <View style={st.paymentRow}>
+                  <Text style={st.paymentLabel}>Advance Already Used</Text>
+                  <Text style={st.paymentValue}>{formatINR(totals.advanceAppliedTotal ?? 0)}</Text>
+                </View>
+              ) : null}
+              <View style={st.paymentRow}>
+                <Text style={st.paymentLabel}>Advance Balance</Text>
+                <Text style={st.paymentValue}>{formatINR(totals.remainingAdvanceBalance ?? totals.unallocatedAdvance ?? 0)}</Text>
               </View>
               <View style={st.paymentRow}>
                 <Text style={st.paymentLabel}>Delivery Payments</Text>
-                <Text style={st.paymentValue}>{formatINR(totals.deliveryPayments ?? 0)}</Text>
+                <Text style={st.paymentValue}>{formatINR(totals.deliveryCashPaymentsTotal ?? totals.deliveryPayments ?? 0)}</Text>
               </View>
               {totals.totalRefunded > 0 ? (
                 <View style={st.paymentRow}>
@@ -594,7 +608,17 @@ export default function Records() {
       showToastMsg('No repair items are ready for delivery.', true);
       return;
     }
-    const pay = getJobTotals(job.items, job.advanceAmount);
+    // Full-job totals stay for history; after any partial delivery READY shows remaining items only.
+    const fullPay = getJobTotals(job.items, job.advanceAmount);
+    const remaining = getRemainingItemsPaymentSummary(job.items, job.advanceAmount);
+    const paymentBlock = remaining.hasPartialDelivery
+      ? formatWhatsAppRemainingPaymentSummary(
+          remaining.remainingItemsTotal,
+          remaining.paidTowardsRemaining,
+          remaining.remainingItemsBalance,
+        )
+      : formatWhatsAppPaymentSummary(fullPay.displayTotal, fullPay.totalPaid, fullPay.balance);
+
     const cleanPhone = (job.countryCode + job.mobileNumber).replace(/\D/g, '');
     const itemsBlock = readyItems.map((i, idx) => formatWhatsAppItemBreakdown(idx + 1, i)).join('\n\n');
 
@@ -608,7 +632,7 @@ ${itemsBlock}
 
 ${WA_SECTION_DIVIDER}
 
-${formatWhatsAppPaymentSummary(pay.displayTotal, pay.totalPaid, pay.balance)}
+${paymentBlock}
 
 ${WA_SECTION_DIVIDER}
 
@@ -624,6 +648,8 @@ Thank you for visiting Swissa Watch & Opticals.`;
     Linking.openURL(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`);
   }, [showToastMsg]);
 
+  const deliveryTxnIdRef = useRef<string | null>(null);
+
   const openDeliveryModal = useCallback(async (job: ListJob) => {
     const ready = job.items.filter(isItemReadyUndelivered);
     if (ready.length === 0) {
@@ -634,6 +660,7 @@ Thank you for visiting Swissa Watch & Opticals.`;
       getGoogleReviewLink(),
       getIncludeGoogleReviewDefault(),
     ]);
+    deliveryTxnIdRef.current = `del_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
     setReviewLink(link || '');
     setDeliveryJob(job);
     setDeliveryItems(new Set());
@@ -641,6 +668,13 @@ Thank you for visiting Swissa Watch & Opticals.`;
     // Per-delivery toggle starts from global default; changing it does not alter Settings
     setIncludeReview(includeDefault);
   }, [showToastMsg]);
+
+  const closeDeliveryModal = useCallback(() => {
+    setDeliveryJob(null);
+    setDeliveryPayment('');
+    setDeliveryItems(new Set());
+    deliveryTxnIdRef.current = null;
+  }, []);
 
   const toggleDeliveryItem = useCallback((id: string) => {
     setDeliveryItems(prev => {
@@ -686,7 +720,11 @@ Thank you for visiting Swissa Watch & Opticals.`;
     );
   }, [deliveryJob, deliverySelection, deliveryPayment]);
 
+  const confirmDeliveryInFlight = useRef(false);
+
   const confirmDelivery = useCallback(async () => {
+    // Prevent double-tap from applying the same payment twice or opening WA twice.
+    if (confirmDeliveryInFlight.current) return;
     if (!deliveryJob || deliveryItems.size === 0) { showToastMsg('Select items to deliver', true); return; }
     const selected = deliveryJob.items.filter(i => deliveryItems.has(i.id) && isItemReadyUndelivered(i));
     if (selected.length === 0) {
@@ -718,16 +756,6 @@ Thank you for visiting Swissa Watch & Opticals.`;
       return;
     }
 
-    const advanceMap = allocateAdvanceAcrossItems(selected, partialPay.advanceAppliedThisDelivery);
-
-    // Allocate cash payment against remaining due after advance credit
-    const dueAfterAdvItems = selected.map(item => {
-      const adv = advanceMap.get(item.id) || 0;
-      const due = Math.max(0, getItemAmount(item) - getItemSpecificPaid(item) - adv);
-      return { ...item, amountPaid: getItemAmount(item) - due };
-    });
-    const paymentMap = allocatePaymentAcrossItems(dueAfterAdvItems, paymentNow);
-
     // Validate Google Review option before marking delivered / sending WhatsApp
     if (includeReview) {
       const link = (reviewLink || '').trim();
@@ -740,61 +768,183 @@ Thank you for visiting Swissa Watch & Opticals.`;
       }
     }
 
-    const now = new Date().toLocaleString();
-    const deliveredSnap: Array<{
-      itemType: string;
-      amount: number;
-      paymentReceived: number;
-      outstanding: number;
-      alreadyPaid: number;
-    }> = [];
+    const deliveryTxnId =
+      deliveryTxnIdRef.current ||
+      `del_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    deliveryTxnIdRef.current = deliveryTxnId;
 
-    for (const item of selected) {
-      const advAdd = advanceMap.get(item.id) || 0;
-      const payAdd = paymentMap.get(item.id) || 0;
-      const itemSpecific = getItemSpecificPaid(item);
-      const amount = getItemAmount(item);
-      const newItemPaid = itemSpecific + payAdd;
-      const prevAdv = Math.max(0, Number((item as any).advanceApplied) || 0);
-      const newAdvanceApplied = prevAdv + advAdd;
-      const covered = newItemPaid + newAdvanceApplied;
-      if (amount - covered > 0.0001) {
-        showToastMsg(
-          `${formatINR(amount - covered)} is still pending for the selected item(s). Full payment is required before delivery.`,
-          true,
-        );
-        return;
-      }
-      await markItemDelivered(item.id, now, newItemPaid, newAdvanceApplied);
-      deliveredSnap.push({
-        itemType: item.itemType,
-        amount,
-        paymentReceived: payAdd,
-        outstanding: 0,
-        alreadyPaid: itemSpecific,
+    confirmDeliveryInFlight.current = true;
+    try {
+      const remainingAdvanceBefore = getUnallocatedAdvance(
+        deliveryJob.advanceAmount,
+        deliveryJob.items,
+      );
+      console.log('[delivery-debug] BEFORE save', {
+        jobId: deliveryJob.id,
+        selectedItemIds: selected.map(i => i.id),
+        currentStatuses: selected.map(i => ({
+          id: i.id,
+          status: i.status,
+          delivered: i.delivered,
+          amountPaid: i.amountPaid,
+          advanceApplied: i.advanceApplied,
+        })),
+        paymentReceivedNow: paymentNow,
+        remainingAdvance: remainingAdvanceBefore,
       });
-    }
 
-    const overallPay = getOverallJobPaymentSummaryAfterDelivery(
-      deliveryJob.items,
-      deliveryJob.advanceAmount,
-      new Set(selected.map(i => i.id)),
-      paymentMap,
-      advanceMap,
-    );
+      const advanceMap = allocateAdvanceAcrossItems(selected, partialPay.advanceAppliedThisDelivery);
 
-    await loadJobs();
+      // Apply projected advance first, then allocate cash against remaining item balances.
+      const dueAfterAdvItems = selected.map(item => {
+        const adv = advanceMap.get(item.id) || 0;
+        return {
+          ...item,
+          advanceApplied: getItemAdvanceApplied(item) + adv,
+        };
+      });
+      const paymentMap = allocatePaymentAcrossItems(dueAfterAdvItems, paymentNow);
 
-    const cleanPhone = (deliveryJob.countryCode + deliveryJob.mobileNumber).replace(/\D/g, '');
-    const name = String(deliveryJob.customerName || '').trim() || 'Customer';
-    const jobNo = String(deliveryJob.jobNumber ?? '').trim();
+      const nowIso = new Date().toISOString();
+      const nowDisplay = new Date().toLocaleString();
+      const deliveredSnap: Array<{
+        itemType: string;
+        amount: number;
+        paymentReceived: number;
+        outstanding: number;
+        alreadyPaid: number;
+      }> = [];
 
-    const reviewText =
-      includeReview && (reviewLink || '').trim()
-        ? formatGoogleReviewWhatsAppSection(reviewLink.trim())
-        : '';
+      const settlements = selected.map(item => {
+        const advAdd = advanceMap.get(item.id) || 0;
+        const payAdd = paymentMap.get(item.id) || 0;
+        const itemSpecific = getItemSpecificPaid(item);
+        const amount = getItemAmount(item);
+        const newItemPaid = itemSpecific + payAdd;
+        const newAdvanceApplied = getItemAdvanceApplied(item) + advAdd;
+        const covered = newItemPaid + newAdvanceApplied;
+        if (amount - covered > 0.0001) {
+          throw new Error(
+            `${formatINR(amount - covered)} is still pending for the selected item(s). Full payment is required before delivery.`,
+          );
+        }
+        deliveredSnap.push({
+          itemType: item.itemType,
+          amount,
+          paymentReceived: payAdd,
+          outstanding: 0,
+          alreadyPaid: itemSpecific,
+        });
+        return {
+          itemId: item.id,
+          amountPaid: newItemPaid,
+          advanceApplied: newAdvanceApplied,
+        };
+      });
 
-    const msg =
+      console.log('[delivery-debug] AFTER calculation', {
+        settlements: settlements.map(s => {
+          const amount = getItemAmount(selected.find(i => i.id === s.itemId)!);
+          const totalPaidForItem = s.amountPaid + s.advanceApplied;
+          return {
+            itemId: s.itemId,
+            newStatus: 'Delivered',
+            advanceAppliedToItem: s.advanceApplied,
+            deliveryPaymentAppliedToItem: s.amountPaid,
+            totalPaidForItem,
+            itemBalance: Math.max(0, amount - totalPaidForItem),
+          };
+        }),
+      });
+
+      // Atomic persist — throws unless SQLite re-read confirms Delivered + payments.
+      const saveResult = await markItemsDeliveredBatch(settlements, nowDisplay, deliveryTxnId);
+      const savedJob = saveResult.job;
+      const selectedIds = new Set(selected.map(i => i.id));
+
+      // Replace Records state from the reloaded SQLite job only (never projected-only success).
+      const [savedListJob] = stripPhotosFromJobs([savedJob]);
+      setJobs(prev => {
+        const exists = prev.some(j => j.id === savedListJob.id);
+        if (!exists) return [savedListJob, ...prev];
+        return prev.map(j => (j.id === savedListJob.id ? savedListJob : j));
+      });
+
+      const overallPay = getOverallJobPaymentSummaryAfterDelivery(
+        deliveryJob.items,
+        deliveryJob.advanceAmount,
+        selectedIds,
+        paymentMap,
+        advanceMap,
+      );
+
+      const remainingAfter = getRemainingItemsPaymentSummary(
+        savedJob.items,
+        savedJob.advanceAmount,
+      );
+      const isFinalDelivery = remainingAfter.remainingItemsTotal <= 0.0001;
+
+      console.log('[delivery-debug] AFTER SQLite reload (screen source of truth)', {
+        jobId: savedJob.id,
+        items: savedJob.items
+          .filter(i => selectedIds.has(i.id))
+          .map(i => ({
+            id: i.id,
+            status: i.status,
+            delivered: i.delivered,
+            amountPaid: i.amountPaid,
+            advanceApplied: i.advanceApplied,
+            totalPaidForItem: getItemTotalPaidForItem(i),
+            itemBalance: getItemBalance(i),
+          })),
+        jobTotals: getJobTotals(savedJob.items, savedJob.advanceAmount),
+        remainingItemsTotal: remainingAfter.remainingItemsTotal,
+      });
+
+      // Push to Firestore and wait — do not claim success if cloud-enabled push fails.
+      const push = await pushJobNow(savedJob.id);
+      if (!push.ok) {
+        throw new Error(
+          push.error
+            ? `Saved on device but cloud sync failed: ${push.error}`
+            : 'Saved on device but cloud sync failed',
+        );
+      }
+      console.log('[delivery-debug] AFTER Firestore sync', push);
+
+      // Full Records refetch so tabs/counts match SQLite.
+      closeDeliveryModal();
+      await loadJobs();
+
+      // Re-verify after loadJobs — catch silent overwrite races.
+      const recheck = await getJob(savedJob.id);
+      if (!recheck) throw new Error('Delivery failed: job missing after Records reload');
+      for (const s of settlements) {
+        const item = recheck.items.find(i => i.id === s.itemId);
+        if (!item || !item.delivered || item.status !== 'Delivered') {
+          throw new Error(
+            `Delivery was overwritten after save (item ${s.itemId} is ${item?.status || 'missing'}). Please try again.`,
+          );
+        }
+        if (Math.abs(getItemTotalPaidForItem(item) - (s.amountPaid + s.advanceApplied)) > 0.001) {
+          throw new Error(
+            `Delivery payment was overwritten after save for item ${s.itemId}. Please try again.`,
+          );
+        }
+      }
+      const [recheckList] = stripPhotosFromJobs([recheck]);
+      setJobs(prev => prev.map(j => (j.id === recheckList.id ? recheckList : j)));
+
+      const cleanPhone = (deliveryJob.countryCode + deliveryJob.mobileNumber).replace(/\D/g, '');
+      const name = String(deliveryJob.customerName || '').trim() || 'Customer';
+      const jobNo = String(deliveryJob.jobNumber ?? '').trim();
+
+      const reviewText =
+        includeReview && (reviewLink || '').trim()
+          ? formatGoogleReviewWhatsAppSection(reviewLink.trim())
+          : '';
+
+      const msg =
 `Hi ${name}! 👋
 
 Your item(s) have been successfully *DELIVERED*. ✅
@@ -807,15 +957,26 @@ ${formatWhatsAppDeliveryItems(
     selectedItemsTotal: partialPay.selectedItemsTotal,
     paymentReceivedNow: paymentNow,
     advanceAppliedThisDelivery: partialPay.advanceAppliedThisDelivery,
-    balanceForDeliveredItems: 0,
+    balanceForDeliveredItems: partialPay.balanceAfterPayment,
   },
   {
     jobTotal: overallPay.jobTotal,
-    jobAdvancePaid: overallPay.jobAdvancePaid,
-    deliveryPayments: overallPay.deliveryPayments,
+    originalAdvancePaid: overallPay.originalAdvancePaid,
+    jobAdvancePaid: overallPay.originalAdvancePaid,
+    advanceAppliedTotal: overallPay.advanceAppliedTotal,
+    remainingAdvanceBalance: overallPay.remainingAdvanceBalance,
+    deliveryCashPaymentsTotal: overallPay.deliveryCashPaymentsTotal,
+    deliveryPayments: overallPay.deliveryCashPaymentsTotal,
     totalPaid: overallPay.totalPaid,
     balancePayable: overallPay.balancePayable,
   },
+  isFinalDelivery
+    ? null
+    : {
+        remainingItemsTotal: remainingAfter.remainingItemsTotal,
+        paidTowardsRemaining: remainingAfter.paidTowardsRemaining,
+        remainingItemsBalance: remainingAfter.remainingItemsBalance,
+      },
 )}
 
 Thank you for choosing SWISSA Watch & Opticals. 🙏
@@ -823,11 +984,24 @@ We hope to serve you again!${reviewText}
 
 ${formatWhatsAppCommunityFooter({ largePreview: true })}`;
 
-    Linking.openURL(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`);
-    setDeliveryJob(null);
-    setDeliveryPayment('');
-    showToastMsg('Items marked as delivered!');
-  }, [deliveryJob, deliveryItems, deliveryPayment, includeReview, reviewLink, loadJobs, showToastMsg]);
+      Linking.openURL(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(msg)}`);
+      showToastMsg('Items marked as delivered!');
+    } catch (e: any) {
+      console.warn('[delivery-debug] FAILED', e?.message || e);
+      showToastMsg(e?.message || 'Delivery failed. Please try again.', true);
+    } finally {
+      confirmDeliveryInFlight.current = false;
+    }
+  }, [
+    deliveryJob,
+    deliveryItems,
+    deliveryPayment,
+    includeReview,
+    reviewLink,
+    loadJobs,
+    showToastMsg,
+    closeDeliveryModal,
+  ]);
 
   /** Open Returned / Not Repaired selection (job advance stays at job level). */
   const openReturnModal = useCallback(async (job: ListJob) => {
@@ -1116,7 +1290,7 @@ ${formatWhatsAppRepairReceiptBody({
     const q = prevSearch.toLowerCase().trim();
     if (!q) return prevJobs;
     return prevJobs.filter(j =>
-      j.jobNumber.toLowerCase().includes(q) ||
+      jobNumberMatchesSearch(j.jobNumber, prevSearch) ||
       j.items.some(i =>
         i.itemType.toLowerCase().includes(q) ||
         (i.brand || '').toLowerCase().includes(q) ||
@@ -1394,7 +1568,7 @@ ${formatWhatsAppRepairReceiptBody({
           <View style={[st.modalBox, { maxHeight: '80%' }]}>
             <View style={st.modalHeader}>
               <Text style={st.modalTitle}>Select Ready Items to Deliver</Text>
-              <TouchableOpacity onPress={() => setDeliveryJob(null)}>
+              <TouchableOpacity onPress={closeDeliveryModal}>
                 <Ionicons name="close" size={24} color={C.primary} />
               </TouchableOpacity>
             </View>
@@ -1424,7 +1598,7 @@ ${formatWhatsAppRepairReceiptBody({
                       Item Amount: {formatINR(getItemAmount(item))}
                     </Text>
                     <Text style={st.deliveryItemAmt}>
-                      Paid specifically for this item: {formatINR(getItemSpecificPaid(item))}
+                      Paid specifically for this item: {formatINR(getItemTotalPaidForItem(item))}
                     </Text>
                   </View>
                 </TouchableOpacity>
@@ -1442,11 +1616,11 @@ ${formatWhatsAppRepairReceiptBody({
                     <Text style={st.paymentValue}>{formatINR(deliveryPaymentLive.itemSpecificPaid)}</Text>
                   </View>
                   <View style={st.paymentRow}>
-                    <Text style={st.paymentLabel}>Unallocated job advance</Text>
+                    <Text style={st.paymentLabel}>Advance balance (unused)</Text>
                     <Text style={st.paymentValue}>{formatINR(deliveryPaymentLive.unallocatedAdvance)}</Text>
                   </View>
                   <View style={st.paymentRow}>
-                    <Text style={st.paymentLabel}>Advance to apply now</Text>
+                    <Text style={st.paymentLabel}>Advance applied now</Text>
                     <Text style={st.paymentValue}>{formatINR(deliveryPaymentLive.advanceAppliedThisDelivery)}</Text>
                   </View>
                   <View style={st.paymentRow}>

@@ -5,8 +5,8 @@ import {
   normalizeDiagnosisPhraseKey, normalizeServicePhraseKey, SERVICE_PHRASE_ALL_ITEMS,
   mapDiagnosisCategoryToItemType,
 } from './types';
-import { DEFAULT_PHRASES } from './constants';
-import { normalizePhotos } from './photos';
+import { DEFAULT_PHRASES, generateJobNumber } from './constants';
+import { normalizePhotos, preparePhotosForStorage } from './photos';
 
 let memJobs: RepairJob[] = [];
 let memPhrases: CustomPhrase[] = [];
@@ -110,16 +110,55 @@ export async function initDB(): Promise<void> {
   seedDiagnosisLibrary();
 }
 
+/** Exact match on full stored Job ID (e.g. M48372). Does not rewrite legacy IDs. */
+export async function jobNumberExists(jobNumber: string): Promise<boolean> {
+  const n = String(jobNumber || '').trim();
+  if (!n) return false;
+  return memJobs.some(j => j.jobNumber === n);
+}
+
+async function isJobNumberAvailable(candidate: string): Promise<boolean> {
+  if (await jobNumberExists(candidate)) return false;
+  try {
+    const sync = await import('./sync');
+    if (await sync.isJobNumberTakenInCloud(candidate)) return false;
+  } catch {
+    /* offline / unavailable — local uniqueness still enforced */
+  }
+  return true;
+}
+
+/** Prefer on-screen Job ID when free; otherwise allocate a new Mxxxxx. */
+export async function allocateUniqueJobNumber(
+  preferred?: string,
+  maxAttempts = 40,
+): Promise<string> {
+  const pref = String(preferred || '').trim();
+  if (pref && (await isJobNumberAvailable(pref))) return pref;
+
+  for (let i = 0; i < maxAttempts; i++) {
+    const candidate = generateJobNumber();
+    if (await isJobNumberAvailable(candidate)) return candidate;
+  }
+  throw new Error('Could not allocate a unique Job ID');
+}
+
 export async function createJob(job: Omit<RepairJob,'items'>, items: RepairItem[]): Promise<void> {
   let cloudSyncEnabled = job.cloudSyncEnabled !== false;
   try {
     const sync = await import('./sync');
     cloudSyncEnabled = sync.SYNC_ENABLED && job.cloudSyncEnabled !== false;
   } catch { /* keep */ }
+  const jobNumber = String(job.jobNumber || '').trim();
+  if (!jobNumber) throw new Error('Job ID is required');
+  if (await jobNumberExists(jobNumber)) {
+    throw new Error(`Job ID ${jobNumber} already exists`);
+  }
   memJobs.unshift({
     ...job,
+    jobNumber,
     cloudSyncEnabled,
-    items: items.map(i => ({ ...i, photos: normalizePhotos(i.photos) })),
+    items: items.map(i => ({ ...i, photos: preparePhotosForStorage(i.photos) })),
   });
   notifyDataChanged({ jobId: job.id });
 }
@@ -175,7 +214,7 @@ export async function updateItem(item: RepairItem): Promise<void> {
   for (const j of memJobs) {
     const idx = j.items.findIndex(i => i.id === item.id);
     if (idx !== -1) {
-      j.items[idx] = { ...item, photos: normalizePhotos(item.photos), updatedAt: now };
+      j.items[idx] = { ...item, photos: preparePhotosForStorage(item.photos), updatedAt: now };
       j.updatedAt = now;
       notifyDataChanged({ jobId: j.id });
       return;
@@ -187,7 +226,7 @@ export async function addItemToJob(item: RepairItem): Promise<void> {
   const j = memJobs.find(j => j.id === item.jobId);
   const now = new Date().toISOString();
   if (j) {
-    j.items.push({ ...item, photos: normalizePhotos(item.photos) });
+    j.items.push({ ...item, photos: preparePhotosForStorage(item.photos) });
     j.updatedAt = now;
   }
   notifyDataChanged({ jobId: item.jobId });
@@ -231,22 +270,108 @@ export async function markItemDelivered(
   date: string,
   amountPaid?: number,
   advanceApplied?: number,
+  deliveryTxnId?: string,
 ): Promise<void> {
+  await markItemsDeliveredBatch(
+    [{
+      itemId: id,
+      amountPaid: amountPaid !== undefined ? Math.max(0, amountPaid) : 0,
+      advanceApplied: advanceApplied !== undefined ? Math.max(0, advanceApplied) : 0,
+    }],
+    date,
+    deliveryTxnId || '',
+  );
+}
+
+export type DeliveryItemSettlement = {
+  itemId: string;
+  amountPaid?: number;
+  advanceApplied?: number;
+};
+
+export async function markItemsDeliveredBatch(
+  settlements: DeliveryItemSettlement[],
+  deliveredAt: string,
+  deliveryTxnId = '',
+): Promise<{ applied: boolean; jobId: string; job: RepairJob }> {
+  if (settlements.length === 0) {
+    throw new Error('Delivery failed: no items selected');
+  }
   const now = new Date().toISOString();
-  for (const j of memJobs) {
-    const item = j.items.find(i => i.id === id);
-    if (item) {
-      item.delivered = true;
-      item.deliveredDate = date;
-      item.status = 'Delivered';
-      item.updatedAt = now;
-      if (amountPaid !== undefined) item.amountPaid = Math.max(0, amountPaid);
-      if (advanceApplied !== undefined) item.advanceApplied = Math.max(0, advanceApplied);
-      j.updatedAt = now;
-      notifyDataChanged({ jobId: j.id });
-      return;
+  const date = deliveredAt || now;
+  const txnId = String(deliveryTxnId || '').trim();
+
+  let jobId: string | null = null;
+  const targets: Array<{ job: typeof memJobs[0]; item: typeof memJobs[0]['items'][0]; settlement: DeliveryItemSettlement }> = [];
+
+  for (const s of settlements) {
+    let found = false;
+    for (const j of memJobs) {
+      const item = j.items.find(i => i.id === s.itemId);
+      if (item) {
+        targets.push({ job: j, item, settlement: s });
+        jobId = j.id;
+        found = true;
+        break;
+      }
+    }
+    if (!found) throw new Error(`Delivery failed: item ${s.itemId} not found`);
+  }
+
+  if (!jobId) throw new Error('Delivery failed: job not found');
+
+  try {
+    const sync = await import('./sync');
+    sync.markJobDirtyImmediate(jobId);
+  } catch { /* ignore */ }
+
+  if (txnId && targets.every(t => t.item.lastDeliveryTxnId === txnId && t.item.delivered)) {
+    const existing = memJobs.find(j => j.id === jobId);
+    if (!existing) throw new Error('Delivery failed: job missing after idempotent check');
+    return { applied: false, jobId, job: JSON.parse(JSON.stringify(existing)) };
+  }
+
+  for (const t of targets) {
+    if (t.settlement.amountPaid === undefined || t.settlement.advanceApplied === undefined) {
+      throw new Error('Delivery failed: amountPaid and advanceApplied are required');
+    }
+    t.item.delivered = true;
+    t.item.deliveredDate = date;
+    t.item.status = 'Delivered';
+    t.item.updatedAt = now;
+    t.item.lastDeliveryTxnId = txnId;
+    t.item.amountPaid = Math.max(0, Number(t.settlement.amountPaid) || 0);
+    t.item.advanceApplied = Math.max(0, Number(t.settlement.advanceApplied) || 0);
+    t.job.updatedAt = now;
+  }
+
+  const job = memJobs.find(j => j.id === jobId);
+  if (!job) throw new Error('Delivery failed: could not reload job');
+
+  for (const s of settlements) {
+    const item = job.items.find(i => i.id === s.itemId);
+    if (!item || !item.delivered || item.status !== 'Delivered') {
+      throw new Error(`Delivery failed: item ${s.itemId} not persisted as Delivered`);
     }
   }
+
+  console.log('[delivery-debug] Web DB save verified', {
+    jobId,
+    items: settlements.map(s => {
+      const item = job.items.find(i => i.id === s.itemId)!;
+      return {
+        id: item.id,
+        status: item.status,
+        delivered: item.delivered,
+        amountPaid: item.amountPaid,
+        advanceApplied: item.advanceApplied,
+        totalPaidForItem: item.amountPaid + item.advanceApplied,
+      };
+    }),
+  });
+
+  notifyDataChanged({ jobId });
+  return { applied: true, jobId, job: JSON.parse(JSON.stringify(job)) };
 }
 
 export async function markItemReturned(

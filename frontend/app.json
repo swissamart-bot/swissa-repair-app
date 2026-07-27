@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "Swissa",
-    "slug": "swissa",
-    "version": "1.0.0",
+    "name": "SWISSA REPAIR PRO",
+    "slug": "swissa-repair-pro",
+    "version": "2.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "swissa",
+    "scheme": "swissa-repair-pro",
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": true,
@@ -14,20 +14,22 @@
         "NSPhotoLibraryUsageDescription": "Select item photos from gallery",
         "NSContactsUsageDescription": "Pick customer from contacts"
       },
-      "bundleIdentifier": "com.emergent.offlinedbsync.jgwa5g"
+      "bundleIdentifier": "com.swissamart.swissarepairpro"
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor": "#0A0A0A"
+        "backgroundColor": "#0A1628"
       },
-      "package": "com.swissamartbot.swissa",
+      "package": "com.swissamart.swissarepairpro",
       "googleServicesFile": "./google-services.json",
       "permissions": [
-        "CAMERA",
-        "READ_EXTERNAL_STORAGE",
-        "WRITE_EXTERNAL_STORAGE",
-        "READ_CONTACTS"
+        "android.permission.CAMERA",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_CONTACTS",
+        "android.permission.WRITE_CONTACTS",
+        "android.permission.RECORD_AUDIO"
       ]
     },
     "web": {
@@ -64,6 +66,13 @@
     ],
     "experiments": {
       "typedRoutes": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "b8f5b1af-7504-4d38-9b1d-19223e4d0708"
+      }
+    },
+    "owner": "swissamart-bot"
   }
 }

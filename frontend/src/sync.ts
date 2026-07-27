@@ -11,7 +11,10 @@ import {
   collection,
   doc,
   getDocs,
+  limit,
+  query,
   setDoc,
+  where,
   type DocumentData,
 } from 'firebase/firestore';
 import { signInAnonymously } from 'firebase/auth';
@@ -191,16 +194,40 @@ export function effectiveUpdatedAt(job: Pick<RepairJob, 'updatedAt' | 'items'>):
   return max || new Date().toISOString();
 }
 
-function sanitizeItem(item: RepairItem): RepairItem {
+function sanitizeItem(item: RepairItem): RepairItem & {
+  advanceAppliedToItem: number;
+  deliveryPaymentAppliedToItem: number;
+  totalPaidForItem: number;
+  itemBalance: number;
+  deliveredAt: string;
+  deliveryTxnId: string;
+} {
+  const amountPaid = item.amountPaid || 0;
+  const advanceApplied = item.advanceApplied || 0;
+  const finalAmount = Math.max(0, Number(item.finalAmount) || 0);
+  const estimatedAmount = Math.max(0, Number(item.estimatedAmount) || 0);
+  const itemAmount = finalAmount > 0 ? finalAmount : estimatedAmount;
+  const totalPaidForItem = amountPaid + advanceApplied;
+  const deliveredAt = item.delivered
+    ? (item.deliveredDate || item.updatedAt || '')
+    : '';
   return {
     ...item,
     photos: sanitizePhotosForCloud(item.photos),
-    amountPaid: item.amountPaid || 0,
-    advanceApplied: item.advanceApplied || 0,
+    amountPaid,
+    advanceApplied,
     refundAmount: item.refundAmount || 0,
     nonRefundableCharges: item.nonRefundableCharges || 0,
     returnedDate: item.returnedDate || '',
     selectedPhrases: item.selectedPhrases || [],
+    lastDeliveryTxnId: item.lastDeliveryTxnId || '',
+    // Portal-friendly aliases (same values; do not change local schema semantics)
+    advanceAppliedToItem: advanceApplied,
+    deliveryPaymentAppliedToItem: amountPaid,
+    totalPaidForItem,
+    itemBalance: Math.max(0, itemAmount - totalPaidForItem),
+    deliveredAt,
+    deliveryTxnId: item.lastDeliveryTxnId || '',
   };
 }
 
@@ -255,7 +282,8 @@ function fromFirestoreDoc(data: DocumentData): FirestoreJobDoc | null {
     expectedDeliveryDate: String(it.expectedDeliveryDate || ''),
     warrantyDetails: String(it.warrantyDetails || ''),
     delivered: !!it.delivered,
-    deliveredDate: String(it.deliveredDate || ''),
+    deliveredDate: String(it.deliveredDate || it.deliveredAt || ''),
+    lastDeliveryTxnId: String(it.lastDeliveryTxnId || it.deliveryTxnId || ''),
     createdAt: String(it.createdAt || ''),
     updatedAt: String(it.updatedAt || ''),
   }));
@@ -322,6 +350,37 @@ async function persistCounters(): Promise<void> {
   } catch { /* ignore */ }
 }
 
+/**
+ * True if another non-deleted Firestore job already uses this full Job ID (e.g. M48372).
+ * Used for uniqueness — does not rewrite legacy IDs.
+ */
+export async function isJobNumberTakenInCloud(
+  jobNumber: string,
+  exceptJobId?: string,
+): Promise<boolean> {
+  const n = String(jobNumber || '').trim();
+  if (!n || !hasFirebaseWebAppConfig()) return false;
+  try {
+    await ensureAuth();
+    const firestore = getFirestoreDb();
+    const snap = await getDocs(
+      query(
+        collection(firestore, FIRESTORE_JOBS_COLLECTION),
+        where('jobNumber', '==', n),
+        limit(5),
+      ),
+    );
+    return snap.docs.some(d => {
+      if (exceptJobId && d.id === exceptJobId) return false;
+      const data = d.data() as DocumentData;
+      return !data?.deleted;
+    });
+  } catch (e) {
+    console.warn('Cloud Job ID uniqueness check skipped:', e);
+    return false;
+  }
+}
+
 async function isJobCloudEligible(jobId: string): Promise<boolean> {
   if (!SYNC_ENABLED) return false;
   if (SYNC_MIGRATE_EXISTING_LOCAL_JOBS) return true;
@@ -330,16 +389,28 @@ async function isJobCloudEligible(jobId: string): Promise<boolean> {
   return !!job?.cloudSyncEnabled;
 }
 
+/** Mark dirty immediately (sync) so a concurrent pull cannot wipe in-flight local edits. */
+export function markJobDirtyImmediate(jobId: string): void {
+  if (!jobId || !SYNC_ENABLED) return;
+  dirtyIds.add(jobId);
+  tombstones.delete(jobId);
+}
+
 /** Queue a job for upload only if it is cloud-eligible. */
 export function scheduleJobSync(jobId: string): void {
   if (!jobId || !SYNC_ENABLED) return;
+  // IMMEDIATE dirty — closes race where pull overwrites before eligibility resolves
+  markJobDirtyImmediate(jobId);
+  persistQueues().catch(() => {});
+  emit();
   isJobCloudEligible(jobId)
     .then(ok => {
-      if (!ok) return;
-      dirtyIds.add(jobId);
-      tombstones.delete(jobId);
-      persistQueues().catch(() => {});
-      emit();
+      if (!ok) {
+        dirtyIds.delete(jobId);
+        persistQueues().catch(() => {});
+        emit();
+        return;
+      }
       scheduleSyncSoon();
     })
     .catch(() => {});
@@ -362,11 +433,13 @@ export function scheduleJobDeleted(
 
 export function scheduleJobsSync(jobIds: string[]): void {
   if (!SYNC_ENABLED) return;
+  for (const id of jobIds) {
+    if (id) markJobDirtyImmediate(id);
+  }
   Promise.all(jobIds.map(async id => {
     if (!id) return;
-    if (await isJobCloudEligible(id)) {
-      dirtyIds.add(id);
-      tombstones.delete(id);
+    if (!(await isJobCloudEligible(id))) {
+      dirtyIds.delete(id);
     }
   }))
     .then(() => {
@@ -375,6 +448,67 @@ export function scheduleJobsSync(jobIds: string[]): void {
       scheduleSyncSoon();
     })
     .catch(() => {});
+}
+
+/**
+ * Push one job to Firestore now and wait for completion.
+ * Used after delivery so Records/cloud match before success UI.
+ */
+export async function pushJobNow(jobId: string): Promise<{ ok: boolean; skipped?: boolean; error?: string }> {
+  if (!jobId) return { ok: false, error: 'Missing job id' };
+  if (!SYNC_ENABLED) return { ok: true, skipped: true };
+  if (!online) {
+    // Local SQLite already verified; queue for next online sync.
+    markJobDirtyImmediate(jobId);
+    persistQueues().catch(() => {});
+    emit();
+    console.log('[delivery-debug] Firestore push deferred (offline)', { jobId });
+    return { ok: true, skipped: true };
+  }
+
+  try {
+    if (!hasFirebaseWebAppConfig()) {
+      return { ok: false, error: getFirebaseConfigStatus().message };
+    }
+    await ensureAuth();
+    const { getJob } = await dbApi();
+    const job = await getJob(jobId);
+    if (!job) return { ok: false, error: 'Job not found after delivery' };
+    if (!job.cloudSyncEnabled && !SYNC_MIGRATE_EXISTING_LOCAL_JOBS) {
+      return { ok: true, skipped: true };
+    }
+
+    markJobDirtyImmediate(jobId);
+    const firestore = getFirestoreDb();
+    const pushedAt = effectiveUpdatedAt(job);
+    const payload = toFirestoreDoc(job, false);
+    await setDoc(doc(firestore, FIRESTORE_JOBS_COLLECTION, jobId), payload, { merge: false });
+
+    const latest = await getJob(jobId);
+    if (!latest || effectiveUpdatedAt(latest) === pushedAt) {
+      dirtyIds.delete(jobId);
+    }
+    await persistQueues();
+    emit();
+    console.log('[delivery-debug] Firestore push OK', {
+      jobId,
+      items: (payload.items || []).map((it: any) => ({
+        id: it.id,
+        status: it.status,
+        delivered: it.delivered,
+        amountPaid: it.amountPaid,
+        advanceApplied: it.advanceApplied,
+        totalPaidForItem: it.totalPaidForItem,
+        itemBalance: it.itemBalance,
+        deliveryTxnId: it.deliveryTxnId || it.lastDeliveryTxnId,
+      })),
+    });
+    return { ok: true };
+  } catch (e: any) {
+    const msg = e?.message || String(e);
+    console.warn('[delivery-debug] Firestore push FAILED', jobId, msg);
+    return { ok: false, error: msg };
+  }
 }
 
 /** Staff opt-in: enable cloud sync for one historical job and queue upload. */
@@ -508,6 +642,7 @@ async function pushPending(): Promise<void> {
 
   const ids = [...dirtyIds];
   for (const id of ids) {
+    // Always re-read immediately before upload so a delivery mid-sync is not missed.
     const job = await getJob(id);
     if (!job) {
       dirtyIds.delete(id);
@@ -517,9 +652,14 @@ async function pushPending(): Promise<void> {
       dirtyIds.delete(id);
       continue;
     }
+    const pushedAt = effectiveUpdatedAt(job);
     const payload = toFirestoreDoc(job, false);
     await setDoc(doc(firestore, FIRESTORE_JOBS_COLLECTION, id), payload, { merge: false });
-    dirtyIds.delete(id);
+    // Only clear dirty if nothing newer was written locally during the network await.
+    const latest = await getJob(id);
+    if (!latest || effectiveUpdatedAt(latest) === pushedAt) {
+      dirtyIds.delete(id);
+    }
     lastCycleUploaded += 1;
   }
 
@@ -545,18 +685,23 @@ async function pullAndMerge(): Promise<void> {
     if (parsed) remoteById.set(parsed.id, parsed);
   });
 
-  const localJobs = await getAllJobs();
-  const localById = new Map(localJobs.map(j => [j.id, j]));
-
   await runWithoutCloudSyncNotify(async () => {
     for (const remote of remoteById.values()) {
-      const local = localById.get(remote.id) || (await getJob(remote.id));
+      // Always re-read local — never trust a stale snapshot while deliveries may be in flight.
+      const local = await getJob(remote.id);
       const remoteTs = remote.updatedAt || remote.deletedAt || '';
       const localTs = local ? effectiveUpdatedAt(local) : '';
 
       // Historical local-only jobs: never overwrite from cloud
       if (local && !local.cloudSyncEnabled && !SYNC_MIGRATE_EXISTING_LOCAL_JOBS) {
         continue;
+      }
+
+      // Pending local delivery/payment must not be overwritten by an older cloud doc.
+      if (local && dirtyIds.has(remote.id)) {
+        if (!remoteTs || localTs >= remoteTs) {
+          continue;
+        }
       }
 
       if (remote.deleted) {
@@ -608,6 +753,7 @@ async function pullAndMerge(): Promise<void> {
     // Bulk migrate historical local-only jobs — only when flag is ON
     if (SYNC_MIGRATE_EXISTING_LOCAL_JOBS) {
       const { setJobCloudSyncEnabled } = await dbApi();
+      const localJobs = await getAllJobs();
       for (const local of localJobs) {
         if (!remoteById.has(local.id)) {
           if (!local.cloudSyncEnabled) {
