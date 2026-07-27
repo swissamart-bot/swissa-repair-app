@@ -307,15 +307,24 @@ function fromFirestoreDoc(data: DocumentData): FirestoreJobDoc | null {
 }
 
 async function ensureAuth(): Promise<void> {
-  const auth = getFirebaseAuth();
-  if (!auth.currentUser) {
-    await signInAnonymously(auth);
-  }
-  if (!auth.currentUser) {
+  if (!hasFirebaseWebAppConfig()) {
     authenticated = false;
-    throw new Error('Firebase Authentication required: anonymous sign-in failed');
+    throw new Error(getFirebaseConfigStatus().message);
   }
-  authenticated = true;
+  try {
+    const auth = getFirebaseAuth();
+    if (!auth.currentUser) {
+      await signInAnonymously(auth);
+    }
+    if (!auth.currentUser) {
+      authenticated = false;
+      throw new Error('Firebase Authentication required: anonymous sign-in failed');
+    }
+    authenticated = true;
+  } catch (e: any) {
+    authenticated = false;
+    throw new Error(e?.message || 'Firebase Authentication failed');
+  }
 }
 
 async function setLastError(msg: string | null): Promise<void> {
@@ -553,7 +562,12 @@ export async function runSyncCycle(opts?: { pullOnly?: boolean }): Promise<void>
 
   try {
     if (!hasFirebaseWebAppConfig()) {
-      throw new Error(getFirebaseConfigStatus().message);
+      const status = getFirebaseConfigStatus();
+      firestoreReachable = false;
+      authenticated = false;
+      await setLastError(status.message);
+      await setLastMessage(null);
+      return;
     }
     if (!SYNC_ENABLED) {
       await setLastMessage('Cloud sync is disabled (SYNC_ENABLED=false)');
@@ -599,7 +613,11 @@ export async function runSyncCycle(opts?: { pullOnly?: boolean }): Promise<void>
       ? false
       : firestoreReachable;
     if (/permission/i.test(msg)) firestoreReachable = false;
-    authenticated = !!getFirebaseAuth().currentUser;
+    try {
+      authenticated = !!getFirebaseAuth().currentUser;
+    } catch {
+      authenticated = false;
+    }
     await setLastError(msg);
     await setLastMessage(null);
   } finally {

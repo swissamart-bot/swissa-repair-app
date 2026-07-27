@@ -2,9 +2,9 @@
   "expo": {
     "name": "SWISSA REPAIR PRO",
     "slug": "swissa-repair-pro",
-    "version": "2.0.0",
+    "version": "2.0.1",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/images/swr-icon.png",
     "scheme": "swissa-repair-pro",
     "userInterfaceStyle": "light",
     "ios": {
@@ -17,9 +17,10 @@
       "bundleIdentifier": "com.swissamart.swissarepairpro"
     },
     "android": {
+      "versionCode": 2,
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor": "#0A1628"
+        "foregroundImage": "./assets/images/swr-adaptive-icon.png",
+        "backgroundColor": "#B00000"
       },
       "package": "com.swissamart.swissarepairpro",
       "googleServicesFile": "./google-services.json",
