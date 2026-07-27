@@ -6,6 +6,9 @@
  *
  * IMPORTANT: Do not throw at module import time. Missing env must leave the app
  * runnable (SQLite / local) with cloud sync reporting a clear config error.
+ *
+ * IMPORTANT: Use direct `process.env.EXPO_PUBLIC_*` references so Expo/Metro
+ * can inline them at build time. Do not use dynamic `process.env[key]`.
  */
 import { FirebaseApp, getApp, getApps, initializeApp } from 'firebase/app';
 import { Auth, getAuth, initializeAuth } from 'firebase/auth';
@@ -23,9 +26,9 @@ export type FirebaseWebConfig = {
   measurementId?: string;
 };
 
-const env = (key: string): string | undefined => {
-  const v = (process.env as Record<string, string | undefined>)[key];
-  return v && String(v).trim() ? String(v).trim() : undefined;
+const trimEnv = (v: string | undefined): string | undefined => {
+  const t = v?.trim();
+  return t ? t : undefined;
 };
 
 const REQUIRED_KEYS = [
@@ -42,19 +45,26 @@ const REQUIRED_KEYS = [
  * Safe to call repeatedly; does not throw — returns null when incomplete.
  */
 export function getFirebaseConfig(): FirebaseWebConfig | null {
-  const missing = REQUIRED_KEYS.filter(k => !env(k));
-  if (missing.length > 0) return null;
+  // Direct static references — required for Expo public-env inlining in APKs.
+  const apiKey = trimEnv(process.env.EXPO_PUBLIC_FIREBASE_API_KEY);
+  const authDomain = trimEnv(process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN);
+  const projectId = trimEnv(process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID);
+  const storageBucket = trimEnv(process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET);
+  const messagingSenderId = trimEnv(process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID);
+  const appId = trimEnv(process.env.EXPO_PUBLIC_FIREBASE_APP_ID);
+  const measurementId = trimEnv(process.env.EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID);
 
-  const appId = env('EXPO_PUBLIC_FIREBASE_APP_ID')!;
+  if (!apiKey || !authDomain || !projectId || !storageBucket || !messagingSenderId || !appId) {
+    return null;
+  }
   if (!appId.includes(':web:')) return null;
 
-  const measurementId = env('EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID');
   return {
-    apiKey: env('EXPO_PUBLIC_FIREBASE_API_KEY')!,
-    authDomain: env('EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN')!,
-    projectId: env('EXPO_PUBLIC_FIREBASE_PROJECT_ID')!,
-    storageBucket: env('EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET')!,
-    messagingSenderId: env('EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID')!,
+    apiKey,
+    authDomain,
+    projectId,
+    storageBucket,
+    messagingSenderId,
     appId,
     ...(measurementId ? { measurementId } : {}),
   };
@@ -83,8 +93,16 @@ export function getFirebaseConfigStatus(): {
     };
   }
 
-  const missing = REQUIRED_KEYS.filter(k => !env(k));
-  const appId = env('EXPO_PUBLIC_FIREBASE_APP_ID') || '';
+  const present: Record<(typeof REQUIRED_KEYS)[number], boolean> = {
+    EXPO_PUBLIC_FIREBASE_API_KEY: !!trimEnv(process.env.EXPO_PUBLIC_FIREBASE_API_KEY),
+    EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN: !!trimEnv(process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN),
+    EXPO_PUBLIC_FIREBASE_PROJECT_ID: !!trimEnv(process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID),
+    EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET: !!trimEnv(process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET),
+    EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID: !!trimEnv(process.env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID),
+    EXPO_PUBLIC_FIREBASE_APP_ID: !!trimEnv(process.env.EXPO_PUBLIC_FIREBASE_APP_ID),
+  };
+  const missing = REQUIRED_KEYS.filter(k => !present[k]);
+  const appId = trimEnv(process.env.EXPO_PUBLIC_FIREBASE_APP_ID) || '';
   let message: string;
   if (missing.length > 0) {
     message =
@@ -100,7 +118,7 @@ export function getFirebaseConfigStatus(): {
   return {
     ok: false,
     source: 'incomplete',
-    projectId: env('EXPO_PUBLIC_FIREBASE_PROJECT_ID') || '',
+    projectId: trimEnv(process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID) || '',
     appIdPreview: appId ? appId.slice(0, 24) + '…' : '(empty)',
     message,
   };
