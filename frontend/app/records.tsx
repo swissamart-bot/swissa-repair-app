@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useMemo, memo, useRef, useEffect } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, FlatList, StyleSheet, Alert, Modal,
-  ScrollView, Platform, Switch, Image, ActivityIndicator, LayoutAnimation, UIManager,
+  ScrollView, Platform, Switch, ActivityIndicator, LayoutAnimation, UIManager,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -30,6 +30,7 @@ import {
   isItemDelivered, isItemReadyUndelivered, isItemUnfinishedNotReady, isStatusCancelled,
   isItemReturnable, isItemReturned, isItemActivePayable,
 } from '../src/types';
+import { Image } from "expo-image";
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -222,7 +223,7 @@ const JobCard = memo(function JobCard({
         <TouchableOpacity
           testID={`photo-btn-${job.id}`}
           style={st.photoIconBtn}
-          onPress={() => onOpenPhoto(job.id)}
+          onPress={() => onOpenPhoto(job)}
           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           accessibilityLabel={job.hasPhotos ? 'View photo' : 'No photo'}
         >
@@ -230,7 +231,8 @@ const JobCard = memo(function JobCard({
             <Image
               source={{ uri: job.thumbUri }}
               style={st.photoThumb}
-              resizeMode="cover"
+              contentFit="cover"
+              cachePolicy={"memory-disk"}
             />
           ) : (
             <Ionicons
@@ -1331,25 +1333,32 @@ ${formatWhatsAppRepairReceiptBody({
     });
   }, [router, activeTab]);
 
-  const openPhotoViewer = useCallback(async (jobId: string) => {
+  const openPhotoViewer = useCallback((job: ListJob) => {
     setViewerVisible(true);
     setViewerLoading(true);
     setViewerUri(null);
     setViewerUnavailable(false);
     try {
-      const job = await getJob(jobId);
-      let uri: string | null = null;
-      let hasAny = false;
-      for (const item of job?.items || []) {
-        if (itemHasPhotoRecords(item.photos)) hasAny = true;
-        uri = getFirstDisplayUri(item.photos);
-        if (uri) break;
-      }
+      /* ------------------------------------------------------------------------------------- */
+      // Avoiding refetching data that is already present from firebase by commenting this out.
+      // Can safely remove comments below.
+      // const job = await getJob(jobId);
+      // let hasAny = false;
+      // for (const item of job?.items || []) {
+      //   if (itemHasPhotoRecords(item.photos)) hasAny = true;
+      //   uri = getFirstDisplayUri(item.photos);
+      //   if (uri) break;
+      // }
+      /* ------------------------------------------------------------------------------------- */
+
+      // Get the job thumbnail if it exists.
+      let uri: string | null = job?.thumbUri ?? null;
+
       if (uri) {
         setViewerUri(uri);
       } else {
         // Local-only images on web (or missing cloud upload) → clear placeholder
-        setViewerUnavailable(hasAny);
+        setViewerUnavailable(!job.hasPhotos);
       }
     } catch {
       setViewerUnavailable(true);
@@ -1940,7 +1949,7 @@ ${formatWhatsAppRepairReceiptBody({
             <Image
               source={{ uri: viewerUri }}
               style={st.photoFull}
-              resizeMode="contain"
+              contentFit="contain"
               onError={() => {
                 setViewerUri(null);
                 setViewerUnavailable(true);
