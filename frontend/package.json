@@ -8,6 +8,8 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
+    "export:web": "expo export --platform web",
+    "deploy:web": "npm run export:web && firebase deploy --only hosting --project swissa-repair-pro",
     "lint": "expo lint",
     "test:payments": "tsx scripts/test-payment-calcs.ts"
   },

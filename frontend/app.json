@@ -36,7 +36,11 @@
     "web": {
       "bundler": "metro",
       "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./assets/images/favicon.png",
+      "name": "SWISSA REPAIR PRO",
+      "shortName": "SWR Pro",
+      "themeColor": "#B00000",
+      "backgroundColor": "#B00000"
     },
     "plugins": [
       "expo-router",
